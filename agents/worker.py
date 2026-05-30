@@ -51,11 +51,12 @@ def run_worker(
     # Run the coding agent
     if progress_cb:
         progress_cb(task_id, f"Running coding agent ({AGENT_BACKEND})...", "working")
+    agent_output = ""
     try:
         if AGENT_BACKEND == "kiro":
-            summary = _run_kiro_agent(task_id, task_description, working_copy)
+            summary, agent_output = _run_kiro_agent(task_id, task_description, working_copy)
         elif AGENT_BACKEND == "claude-code":
-            summary = _run_claude_code_agent(task_id, task_description, working_copy)
+            summary, agent_output = _run_claude_code_agent(task_id, task_description, working_copy)
         else:
             summary = _run_strands_agent(task_id, task_description, working_copy, model_id)
     except Exception as e:
@@ -79,10 +80,12 @@ def run_worker(
             # Tests regressed — revert
             _git_revert(working_copy, before)
 
+        failure_log = agent_output or err_str
         return WorkerResult(
             task_id=task_id, success=False,
             summary="Max tokens reached" if is_max_tokens else "Agent error",
             error=err_str[:300],
+            failure_log=failure_log,
         )
 
     # Capture diff
@@ -103,6 +106,7 @@ def run_worker(
         return WorkerResult(
             task_id=task_id, success=False, diff=diff, summary=summary,
             test_status="failed", error="Test suite regressed; changes reverted",
+            failure_log=f"Agent output:\n{agent_output}\n\nDiff that caused regression:\n{diff}" if agent_output else f"Diff that caused regression:\n{diff}",
         )
 
     # If tests were already failing before, don't penalize the worker
@@ -153,8 +157,9 @@ def _run_strands_agent(task_id: str, task_description: str, working_copy: Path, 
     return str(response).strip().splitlines()[-1] if str(response).strip() else "No summary"
 
 
-def _run_kiro_agent(task_id: str, task_description: str, working_copy: Path) -> str:
-    """Use kiro-cli as the coding agent (local, powerful, tool-use enabled)."""
+def _run_kiro_agent(task_id: str, task_description: str, working_copy: Path) -> tuple[str, str]:
+    """Use kiro-cli as the coding agent (local, powerful, tool-use enabled).
+    Returns (summary, full_output)."""
     prompt = (
         f"In this repo, implement this task:\n\n"
         f"{task_description}\n\n"
@@ -164,14 +169,17 @@ def _run_kiro_agent(task_id: str, task_description: str, working_copy: Path) -> 
         ["kiro-cli", "chat", "--trust-all-tools", "--no-interactive", prompt],
         capture_output=True, text=True, cwd=str(working_copy), timeout=300,
     )
+    full_output = (r.stdout or "") + (r.stderr or "")
     if r.returncode != 0:
         raise RuntimeError(f"kiro-cli failed: {r.stderr[:500]}")
     lines = r.stdout.strip().splitlines()
-    return lines[-1] if lines else "Completed via kiro-cli"
+    summary = lines[-1] if lines else "Completed via kiro-cli"
+    return summary, full_output
 
 
-def _run_claude_code_agent(task_id: str, task_description: str, working_copy: Path) -> str:
-    """Use claude-code (Anthropic's CLI agent) as the coding agent."""
+def _run_claude_code_agent(task_id: str, task_description: str, working_copy: Path) -> tuple[str, str]:
+    """Use claude-code (Anthropic's CLI agent) as the coding agent.
+    Returns (summary, full_output)."""
     prompt = (
         f"In this repo, implement this task:\n\n"
         f"{task_description}\n\n"
@@ -181,10 +189,12 @@ def _run_claude_code_agent(task_id: str, task_description: str, working_copy: Pa
         ["claude", "-p", prompt, "--allowedTools", "Edit,Write,Read,Bash"],
         capture_output=True, text=True, cwd=str(working_copy), timeout=300,
     )
+    full_output = (r.stdout or "") + (r.stderr or "")
     if r.returncode != 0:
         raise RuntimeError(f"claude-code failed: {r.stderr[:500]}")
     lines = r.stdout.strip().splitlines()
-    return lines[-1] if lines else "Completed via claude-code"
+    summary = lines[-1] if lines else "Completed via claude-code"
+    return summary, full_output
 
 
 # ------------------------------------------------------------------ #

@@ -141,8 +141,11 @@ def record(
         console.print(f"[red]Missing env vars for pipeline: {', '.join(missing)}[/red]")
         raise typer.Exit(code=1)
 
+    # Use only the just-recorded transcript (not the whole folder)
+    transcript_content = transcript_path.read_text()
+
     config = PipelineConfig(
-        transcripts_dir=transcript_path.parent,
+        paste_content=transcript_content,
         repo=repo,
         dry_run=dry_run,
         box_dev_token=os.environ.get("BOX_TOKEN"),
@@ -160,6 +163,50 @@ def record(
 
     show_report_summary(report)
     console.print("\n" + report.to_markdown())
+
+
+@app.command()
+def clean(
+    all: bool = typer.Option(False, "--all", help="Delete all transcripts without prompting"),
+) -> None:
+    """Delete old transcripts from Box so they don't show up in future runs."""
+    _load_and_validate_env()
+    from rich.console import Console
+    from rich.prompt import Confirm
+    from box_client import BoxClient
+
+    console = Console()
+    box = BoxClient(
+        dev_token=os.environ.get("BOX_TOKEN_A") or os.environ.get("BOX_TOKEN"),
+        client_id=os.environ.get("BOX_CLIENT_ID_A"),
+        client_secret=os.environ.get("BOX_SECRET_A"),
+    )
+
+    folder_id = box.ensure_folder("transcripts", os.environ.get("BOX_ROOT_FOLDER_ID", "0"))
+    files = box.list_folder_files(folder_id)
+
+    if not files:
+        console.print("[dim]No transcripts to delete.[/dim]")
+        return
+
+    console.print(f"\n[yellow]Found {len(files)} transcript(s) in Box:[/yellow]")
+    for i, f in enumerate(files, 1):
+        console.print(f"  {i}. [cyan]{f['name']}[/cyan]  [dim]({f['id']})[/dim]")
+
+    if not all:
+        if not Confirm.ask(f"\n[red]Delete all {len(files)} transcript(s)?[/red]", default=False):
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+    deleted = 0
+    for f in files:
+        if box.delete_file(f["id"]):
+            console.print(f"  [green]✓[/green] Deleted {f['name']}")
+            deleted += 1
+        else:
+            console.print(f"  [red]✗[/red] Failed to delete {f['name']}")
+
+    console.print(f"\n[bold green]Deleted {deleted}/{len(files)} transcripts.[/bold green]")
 
 
 if __name__ == "__main__":

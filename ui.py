@@ -117,6 +117,12 @@ def show_worker_result(result: WorkerResult):
             border_style="red",
             width=70,
         ))
+        if result.failure_log:
+            log_lines = result.failure_log.strip().split("\n")
+            compact = "\n".join(log_lines[:30])
+            if len(log_lines) > 30:
+                compact += f"\n... ({len(log_lines) - 30} more lines)"
+            console.print(Panel(compact, title="[dim]Failure Log[/dim]", border_style="red", width=70))
 
 
 def show_commit(task_id: str, branch: str):

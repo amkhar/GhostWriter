@@ -45,6 +45,7 @@ class WorkerResult(BaseModel):
     summary: str
     test_status: Optional[str] = None  # "passed" | "failed" | "skipped"
     error: Optional[str] = None
+    failure_log: Optional[str] = None  # full agent output on failure
 
 
 class IngestedFile(BaseModel):
@@ -140,6 +141,11 @@ class RunReport(BaseModel):
                     lines.append("```")
                 if r.error:
                     lines.append(f"**Error:** {r.error}")
+                if r.failure_log:
+                    lines.append("**Failure Log:**")
+                    lines.append("```")
+                    lines.append(r.failure_log[:2000])
+                    lines.append("```")
                 lines.append("")
 
         # Report-only tasks

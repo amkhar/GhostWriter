@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 
 type View = 'home' | 'running' | 'detail';
-type TaskItem = { id: string; title: string; description: string; reason: string; auto_doable: boolean; auto_doable_category?: string; classification_reasoning?: string };
+type TaskItem = { id: string; title: string; description: string; reason: string; auto_doable: boolean; auto_doable_category?: string; classification_reasoning?: string; priority?: string; evidence?: string[] };
 type AgentResult = { task_id: string; status: string; summary?: string; diff?: string; test_status?: string; title?: string; message?: string; branch?: string; error?: string };
 type StageInfo = { stage: number; name: string; status: string; message: string; stats?: any; tasks?: TaskItem[] };
 type RecStatus = { active: boolean; lines: string[]; partial: string; elapsed: number };
@@ -552,10 +552,17 @@ export default function Home() {
                       className={`p-3 rounded-xl border cursor-pointer transition-all duration-200 hover:bg-slate-800/30 ${isSelected ? 'bg-slate-800/50 border-blue-500' : 'bg-slate-900/30 border-slate-800/80'}`}
                     >
                       <div className="flex items-start justify-between gap-2">
-                        <div className="font-semibold text-xs text-slate-200 truncate max-w-[180px]">{t.title}</div>
-                        <span className={`text-[9px] px-1.5 py-0.5 rounded border font-semibold ${tagColor}`}>
-                          {statusTag}
-                        </span>
+                        <div className="font-semibold text-xs text-slate-200 truncate max-w-[170px]">{t.title}</div>
+                        <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded border font-semibold ${tagColor}`}>
+                            {statusTag}
+                          </span>
+                          {t.priority === 'high' && (
+                            <span className="text-[8px] px-1.5 py-0.2 rounded font-bold uppercase bg-rose-500/10 text-rose-450 border border-rose-500/20">
+                              High Priority
+                            </span>
+                          )}
+                        </div>
                       </div>
                       <p className="text-[10px] text-slate-400 mt-1 line-clamp-2">{t.description}</p>
                       {agentResult && (
@@ -745,15 +752,33 @@ export default function Home() {
                         >
                           <div>
                             <div className="flex items-center justify-between gap-3 mb-2">
-                              <span className="text-xs font-bold text-slate-200 truncate max-w-[200px]" title={t.title}>
+                              <span className="text-xs font-bold text-slate-200 truncate max-w-[180px]" title={t.title}>
                                 {t.title}
                               </span>
-                              <span className="text-[10px] px-2 py-0.5 rounded font-mono font-bold uppercase bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                                Skipped
-                              </span>
+                              <div className="flex items-center gap-1.5 flex-shrink-0">
+                                {t.priority === 'high' && (
+                                  <span className="text-[9px] px-1.5 py-0.5 rounded font-bold uppercase bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                                    High
+                                  </span>
+                                )}
+                                <span className="text-[9px] px-1.5 py-0.5 rounded font-mono font-bold uppercase bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                                  Skipped
+                                </span>
+                              </div>
                             </div>
 
                             <p className="text-xs text-slate-400 mb-3">{t.description}</p>
+
+                            {t.evidence && t.evidence.length > 0 && (
+                              <div className="bg-[#0f172a]/30 border border-blue-900/10 rounded-lg p-2.5 text-[10px] text-slate-400 mb-3 shadow-inner">
+                                <span className="font-bold text-blue-400 block mb-1">Apify Evidence:</span>
+                                <ul className="list-disc pl-4 space-y-0.5">
+                                  {t.evidence.map((ev, idx) => (
+                                    <li key={idx} className="leading-relaxed">{ev}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
                           </div>
 
                           <div className="mt-4 pt-3 border-t border-amber-500/10 flex flex-col gap-2.5">
@@ -864,6 +889,26 @@ export default function Home() {
                     )}
                   </div>
                   <p className="text-xs text-slate-400 ml-5.5 leading-relaxed">{t.description}</p>
+                  {t.priority && (
+                    <div className="ml-5.5 mt-2 flex items-center gap-2">
+                      <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">Priority:</span>
+                      <span className={`text-[9px] px-2 py-0.5 rounded border font-bold uppercase ${
+                        t.priority === 'high' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-slate-800 text-slate-400 border border-slate-750'
+                      }`}>
+                        {t.priority}
+                      </span>
+                    </div>
+                  )}
+                  {t.evidence && t.evidence.length > 0 && (
+                    <div className="bg-[#0f172a]/30 border border-blue-900/20 rounded-xl p-3.5 ml-5.5 mt-2.5 text-xs text-slate-400 leading-normal">
+                      <strong className="text-blue-400 block mb-1">Apify Evidence:</strong>
+                      <ul className="list-disc pl-4 space-y-1">
+                        {t.evidence.map((ev: string, idx: number) => (
+                          <li key={idx}>{ev}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                   {t.classification_reasoning && (
                     <p className="text-xs text-indigo-400/80 bg-indigo-500/5 border border-indigo-500/10 p-2.5 rounded-lg ml-5.5 mt-3 italic">
                       <strong>Classifier Reasoning:</strong> {t.classification_reasoning}
@@ -1050,6 +1095,38 @@ function TaskDetail({
       {task.classification_reasoning && (
         <div className="bg-[#111827]/40 border border-slate-800 rounded-xl p-3.5 italic text-xs text-slate-400">
           <strong>Classifier Reasoning:</strong> {task.classification_reasoning}
+        </div>
+      )}
+
+      {(task.priority || (task.evidence && task.evidence.length > 0)) && (
+        <div className="bg-[#0f172a]/60 border border-blue-900/30 rounded-xl p-4 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <h4 className="text-xs font-bold text-blue-400 uppercase tracking-wider flex items-center gap-1.5">
+              <svg className="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+              </svg>
+              Apify Public Intelligence
+            </h4>
+            {task.priority && (
+              <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                task.priority === 'high' ? 'bg-rose-500/10 text-rose-450 border border-rose-500/20' : 'bg-slate-800 text-slate-400 border border-slate-700/50'
+              }`}>
+                {task.priority} priority
+              </span>
+            )}
+          </div>
+          {task.evidence && task.evidence.length > 0 ? (
+            <div className="space-y-1.5">
+              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">Public Evidence Found:</span>
+              <ul className="list-disc pl-4 space-y-1 text-xs text-slate-300">
+                {task.evidence.map((ev, idx) => (
+                  <li key={idx} className="leading-relaxed">{ev}</li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="text-xs text-slate-500 italic">No specific public issues found on online sources.</p>
+          )}
         </div>
       )}
 

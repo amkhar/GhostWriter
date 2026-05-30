@@ -82,6 +82,15 @@ def init_db():
             FOREIGN KEY (run_id) REFERENCES runs(id)
         );
     """)
+    try:
+        conn.execute("ALTER TABLE tasks ADD COLUMN priority TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE tasks ADD COLUMN evidence TEXT")
+    except sqlite3.OperationalError:
+        pass
+    conn.commit()
     conn.close()
 
 
@@ -264,7 +273,7 @@ async def pipeline_run(req: PipelineRunRequest):
                     "dry_run": req.dry_run,
                     "box_dev_token": os.environ.get("BOX_TOKEN"),
                     "aws_region": os.environ.get("AWS_REGION", "us-east-1"),
-                    "bedrock_model_id": os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-3-5-sonnet-20241022-v2:0"),
+                    "bedrock_model_id": os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6"),
                     "box_root_folder_id": os.environ.get("BOX_ROOT_FOLDER_ID", "0"),
                 }
 
@@ -423,8 +432,8 @@ async def pipeline_run(req: PipelineRunRequest):
                                json.dumps([t.model_dump() for t in neglected]),
                                json.dumps([r.model_dump() for r in results]), json.dumps(stats), run_id))
                 for t in neglected:
-                    conn2.execute("INSERT OR REPLACE INTO tasks (id, run_id, title, description, reason, auto_doable, category, reasoning, user_guidance) VALUES (?,?,?,?,?,?,?,?,?)",
-                                  (t.id, run_id, t.title, t.description, t.reason, int(t.auto_doable), t.auto_doable_category, t.classification_reasoning, t.user_guidance))
+                    conn2.execute("INSERT OR REPLACE INTO tasks (id, run_id, title, description, reason, auto_doable, category, reasoning, user_guidance, priority, evidence) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                  (t.id, run_id, t.title, t.description, t.reason, int(t.auto_doable), t.auto_doable_category, t.classification_reasoning, t.user_guidance, t.priority, json.dumps(t.evidence)))
                 for r in results:
                     conn2.execute("INSERT INTO agent_results (run_id, task_id, success, summary, diff, test_status, error, created_at) VALUES (?,?,?,?,?,?,?,?)",
                                   (run_id, r.task_id, int(r.success), r.summary, r.diff, r.test_status, r.error, datetime.utcnow().isoformat()))
@@ -476,7 +485,18 @@ async def get_run(run_id: str):
         conn.close()
         raise HTTPException(404, "Run not found")
     run = dict(row)
-    run["tasks"] = [dict(r) for r in conn.execute("SELECT * FROM tasks WHERE run_id = ?", (run_id,)).fetchall()]
+    tasks = []
+    for r in conn.execute("SELECT * FROM tasks WHERE run_id = ?", (run_id,)).fetchall():
+        t = dict(r)
+        if t.get("evidence"):
+            try:
+                t["evidence"] = json.loads(t["evidence"])
+            except Exception:
+                t["evidence"] = []
+        else:
+            t["evidence"] = []
+        tasks.append(t)
+    run["tasks"] = tasks
     run["agent_results"] = [dict(r) for r in conn.execute("SELECT * FROM agent_results WHERE run_id = ?", (run_id,)).fetchall()]
     conn.close()
     return run
@@ -487,19 +507,38 @@ async def list_all_tasks():
     conn = get_db()
     rows = conn.execute("SELECT t.*, r.started_at as run_date FROM tasks t JOIN runs r ON t.run_id = r.id ORDER BY r.started_at DESC LIMIT 100").fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    results = []
+    for r in rows:
+        t = dict(r)
+        if t.get("evidence"):
+            try:
+                t["evidence"] = json.loads(t["evidence"])
+            except Exception:
+                t["evidence"] = []
+        else:
+            t["evidence"] = []
+        results.append(t)
+    return results
 
 
 @app.get("/api/tasks/{task_id}")
 async def get_task(task_id: str):
     conn = get_db()
-    task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    if not task:
+    task_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if not task_row:
         conn.close()
         raise HTTPException(404, "Task not found")
+    task = dict(task_row)
+    if task.get("evidence"):
+        try:
+            task["evidence"] = json.loads(task["evidence"])
+        except Exception:
+            task["evidence"] = []
+    else:
+        task["evidence"] = []
     results = conn.execute("SELECT * FROM agent_results WHERE task_id = ?", (task_id,)).fetchall()
     conn.close()
-    return {"task": dict(task), "results": [dict(r) for r in results]}
+    return {"task": task, "results": [dict(r) for r in results]}
 
 
 @app.get("/api/tasks/{task_id}/override")
@@ -544,6 +583,12 @@ async def task_override(task_id: str, run_id: str, guidance: str):
     task_rows = conn.execute("SELECT * FROM tasks WHERE run_id = ?", (run_id,)).fetchall()
     for r in task_rows:
         t = dict(r)
+        evidence_list = []
+        if t.get("evidence"):
+            try:
+                evidence_list = json.loads(t["evidence"])
+            except Exception:
+                evidence_list = []
         updated_tasks.append({
             "id": t["id"],
             "title": t["title"],
@@ -553,6 +598,8 @@ async def task_override(task_id: str, run_id: str, guidance: str):
             "auto_doable_category": t["category"],
             "classification_reasoning": t["reasoning"],
             "user_guidance": t["user_guidance"],
+            "priority": t.get("priority"),
+            "evidence": evidence_list,
         })
     conn.execute("UPDATE runs SET tasks_json = ? WHERE id = ?", (json.dumps(updated_tasks), run_id))
     conn.commit()
@@ -573,6 +620,12 @@ async def task_override(task_id: str, run_id: str, guidance: str):
             import os
 
             # Rebuild a NeglectedTask object
+            task_evidence = []
+            if task_data.get("evidence"):
+                try:
+                    task_evidence = json.loads(task_data["evidence"])
+                except Exception:
+                    task_evidence = []
             task_obj = NeglectedTask(
                 id=task_id,
                 title=task_data["title"],
@@ -582,10 +635,12 @@ async def task_override(task_id: str, run_id: str, guidance: str):
                 auto_doable_category="user-directed",
                 classification_reasoning=f"User override: {guidance[:80]}",
                 user_guidance=guidance,
+                priority=task_data.get("priority"),
+                evidence=task_evidence,
             )
 
             # Rebuild configuration
-            model_id = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-3-5-sonnet-20241022-v2:0")
+            model_id = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
             repo_path = PROJECT_ROOT
 
             def progress_cb(tid: str, msg: str, status: str = "working"):
