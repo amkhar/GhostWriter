@@ -1,0 +1,30 @@
+Standup Meeting — 2024-01-10 (Wednesday)
+
+Attendees: Alice, Bob, Carol, Dave
+
+---
+
+Alice:
+- Yesterday: Started payment service integration.
+- Today: Continuing payment service — blocked on Stripe API docs.
+- Blockers: Stripe API docs are confusing.
+
+Bob:
+- Yesterday: Worked on API rate limiter.
+- Today: Finishing rate limiter, then code review.
+- Blockers: Still haven't updated the README. The `run.sh` reference is still there. I keep forgetting. Will do it today for real.
+
+Carol:
+- Yesterday: Added tests for data parser.
+- Today: More tests, then looking at the null check issue.
+- Blockers: The `parse_user` null check for email is STILL not done. It's been two standups now. I'll try to get to it but I'm swamped with tests.
+
+Dave:
+- Yesterday: Monitoring logs.
+- Today: Setting up alerting rules.
+- Blockers: The logging module doesn't emit a log line when a user session expires. We should add that. Mentioned it last sprint too.
+
+Action items:
+- [ ] Bob: Update README (run.sh → make run) — OVERDUE
+- [ ] Carol: Add null check to parse_user email — OVERDUE
+- [ ] Dave: Add log line for user session expiry in logging module

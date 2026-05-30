@@ -1,0 +1,35 @@
+Standup Meeting — 2024-01-12 (Friday)
+
+Attendees: Alice, Bob, Carol, Dave, Eve
+
+---
+
+Alice:
+- Yesterday: Unblocked on Stripe, made progress on payment integration.
+- Today: Writing tests for payment service.
+- Blockers: None.
+
+Bob:
+- Yesterday: Finished rate limiter. Did NOT update the README again.
+- Today: Sprint planning prep.
+- Blockers: README still has `run.sh` instead of `make run`. This is the third standup I've mentioned it. It's a 2-minute fix. Nobody owns it.
+
+Carol:
+- Yesterday: Finished data parser tests.
+- Today: Starting on the export feature.
+- Blockers: The `parse_user` null check for email is still not done. Three standups. The function will crash if email is None or empty string. It's a one-liner fix.
+
+Dave:
+- Yesterday: Set up alerting rules.
+- Today: Documentation sprint.
+- Blockers: The session expiry log line is still missing. Third time mentioning it. It's just adding `logger.info("Session expired for user %s", user_id)` in the right place.
+
+Eve (new):
+- Yesterday: Onboarding.
+- Today: Reading codebase.
+- Blockers: The README is confusing — it references `run.sh` which doesn't exist.
+
+Action items:
+- [ ] Anyone: Update README run.sh → make run (3rd time on backlog, unassigned)
+- [ ] Anyone: Add null/empty check to parse_user for email (3rd time, unassigned)
+- [ ] Anyone: Add session expiry log line (3rd time, unassigned)

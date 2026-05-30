@@ -1,0 +1,29 @@
+Standup Meeting — 2024-01-08 (Monday)
+
+Attendees: Alice, Bob, Carol, Dave
+
+---
+
+Alice:
+- Yesterday: Finished the user authentication refactor.
+- Today: Starting on the payment service integration.
+- Blockers: None.
+
+Bob:
+- Yesterday: Reviewed Alice's PR.
+- Today: Working on the API rate limiter.
+- Blockers: The README is still outdated — it still references the old `run.sh` script instead of `make run`. Nobody has updated it. I'll add it to the backlog again.
+
+Carol:
+- Yesterday: Fixed the CI pipeline timeout.
+- Today: Adding more unit tests for the data parser module.
+- Blockers: The `parse_user` function has no null check for the `email` field — it crashes on empty input. I mentioned this last week too. Still not fixed.
+
+Dave:
+- Yesterday: Deployed the staging environment.
+- Today: Monitoring logs.
+- Blockers: None.
+
+Action items:
+- [ ] Bob: Update README to replace `run.sh` references with `make run`
+- [ ] Carol: Add null check to `parse_user` for email field
