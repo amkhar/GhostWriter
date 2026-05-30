@@ -1,5 +1,11 @@
 # 👻 GhostWriter
 
+[![Tests](https://github.com/OWNER/REPO/workflows/Tests/badge.svg)](https://github.com/OWNER/REPO/actions)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![PyPI](https://img.shields.io/pypi/v/ghostwriter.svg)](https://pypi.org/project/ghostwriter/)
+[![Code style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
 **Turn standups into shipped code.**
 
 GhostWriter listens to your standup meetings, identifies the tasks your team keeps mentioning but never ships, and quietly implements the safe ones — then pushes a branch.

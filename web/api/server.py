@@ -26,6 +26,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 load_dotenv(PROJECT_ROOT / ".env")
 
+# Translate BEDROCK_API_KEY to boto3 bearer token
+if os.environ.get("BEDROCK_API_KEY") and not os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
+    os.environ["AWS_BEARER_TOKEN_BEDROCK"] = os.environ["BEDROCK_API_KEY"]
+
 DB_PATH = Path(__file__).resolve().parent.parent / "ghostwriter.db"
 
 # ---------- Database ---------- #
@@ -51,6 +55,31 @@ def init_db():
             tasks_json TEXT,
             results_json TEXT,
             stats_json TEXT
+        );
+        CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            reason TEXT,
+            auto_doable INTEGER DEFAULT 0,
+            category TEXT,
+            reasoning TEXT,
+            user_guidance TEXT,
+            FOREIGN KEY (run_id) REFERENCES runs(id)
+        );
+        CREATE TABLE IF NOT EXISTS agent_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            success INTEGER DEFAULT 0,
+            summary TEXT,
+            diff TEXT,
+            test_status TEXT,
+            error TEXT,
+            branch TEXT,
+            created_at TEXT,
+            FOREIGN KEY (run_id) REFERENCES runs(id)
         );
     """)
     conn.close()
@@ -192,6 +221,13 @@ async def recording_status():
 
 
 # ---------- Pipeline endpoints ---------- #
+
+@app.get("/api/pipeline/stream")
+async def pipeline_stream(transcript: str = "", repo: str = "", dry_run: bool = False):
+    """SSE endpoint for pipeline streaming (GET for EventSource compatibility)."""
+    req = PipelineRunRequest(transcript=transcript or None, repo=repo or None, dry_run=dry_run)
+    return await pipeline_run(req)
+
 
 @app.post("/api/pipeline/run")
 async def pipeline_run(req: PipelineRunRequest):
@@ -344,6 +380,12 @@ async def pipeline_run(req: PipelineRunRequest):
                               (datetime.utcnow().isoformat(), "complete", report.to_markdown(),
                                json.dumps([t.model_dump() for t in neglected]),
                                json.dumps([r.model_dump() for r in results]), json.dumps(stats), run_id))
+                for t in neglected:
+                    conn2.execute("INSERT OR REPLACE INTO tasks (id, run_id, title, description, reason, auto_doable, category, reasoning, user_guidance) VALUES (?,?,?,?,?,?,?,?,?)",
+                                  (t.id, run_id, t.title, t.description, t.reason, int(t.auto_doable), t.auto_doable_category, t.classification_reasoning, t.user_guidance))
+                for r in results:
+                    conn2.execute("INSERT INTO agent_results (run_id, task_id, success, summary, diff, test_status, error, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                                  (run_id, r.task_id, int(r.success), r.summary, r.diff, r.test_status, r.error, datetime.utcnow().isoformat()))
                 conn2.commit()
                 conn2.close()
 
@@ -373,19 +415,49 @@ async def pipeline_run(req: PipelineRunRequest):
 @app.get("/api/pipeline/runs")
 async def list_runs():
     conn = get_db()
-    rows = conn.execute("SELECT id, started_at, finished_at, status, dry_run, stats_json FROM runs ORDER BY started_at DESC LIMIT 50").fetchall()
+    rows = conn.execute("SELECT id, started_at, finished_at, status, dry_run, stats_json, transcript FROM runs ORDER BY started_at DESC LIMIT 50").fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    results = []
+    for r in rows:
+        d = dict(r)
+        d["stats"] = json.loads(d.pop("stats_json") or "{}")
+        d["transcript_preview"] = (d.get("transcript") or "")[:100]
+        results.append(d)
+    return results
 
 
 @app.get("/api/pipeline/runs/{run_id}")
 async def get_run(run_id: str):
     conn = get_db()
     row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
-    conn.close()
     if not row:
+        conn.close()
         raise HTTPException(404, "Run not found")
-    return dict(row)
+    run = dict(row)
+    run["tasks"] = [dict(r) for r in conn.execute("SELECT * FROM tasks WHERE run_id = ?", (run_id,)).fetchall()]
+    run["agent_results"] = [dict(r) for r in conn.execute("SELECT * FROM agent_results WHERE run_id = ?", (run_id,)).fetchall()]
+    conn.close()
+    return run
+
+
+@app.get("/api/tasks")
+async def list_all_tasks():
+    conn = get_db()
+    rows = conn.execute("SELECT t.*, r.started_at as run_date FROM tasks t JOIN runs r ON t.run_id = r.id ORDER BY r.started_at DESC LIMIT 100").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/tasks/{task_id}")
+async def get_task(task_id: str):
+    conn = get_db()
+    task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if not task:
+        conn.close()
+        raise HTTPException(404, "Task not found")
+    results = conn.execute("SELECT * FROM agent_results WHERE task_id = ?", (task_id,)).fetchall()
+    conn.close()
+    return {"task": dict(task), "results": [dict(r) for r in results]}
 
 
 if __name__ == "__main__":

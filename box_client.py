@@ -170,6 +170,7 @@ class BoxClient:
 
     def ai_extract(self, file_id: str) -> list[dict[str, Any]]:
         """Call Box AI Extract (freeform) for a single file; return list of raw task dicts."""
+        import time as _time
         logger.info("[extract] Box AI Extract for file %s", file_id)
         payload = {
             "items": [{"type": "file", "id": file_id}],
@@ -191,8 +192,16 @@ class BoxClient:
                 {"key": "is_action_item", "type": "boolean"},
             ],
         }
-        resp = self._session.post(f"{_BOX_AI}/extract", json=payload)
-        resp.raise_for_status()
+        for attempt in range(3):
+            resp = self._session.post(f"{_BOX_AI}/extract", json=payload)
+            if resp.status_code == 412:
+                logger.info("[extract] File not ready (412), retrying in %ds...", 2 ** attempt)
+                _time.sleep(2 ** attempt)
+                continue
+            resp.raise_for_status()
+            break
+        else:
+            resp.raise_for_status()
         data = resp.json()
         # Box AI Extract returns a dict of field→value; wrap in list
         if isinstance(data, dict):
