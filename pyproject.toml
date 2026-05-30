@@ -23,6 +23,12 @@ dependencies = [
     "pytest-mock>=3.14",
 ]
 
+[project.optional-dependencies]
+anthropic = ["strands-agents[anthropic]"]
+openai = ["strands-agents[openai]"]
+ollama = ["strands-agents[ollama]"]
+all-providers = ["strands-agents[anthropic,openai,ollama]"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["."]
 only-include = [
@@ -30,6 +36,7 @@ only-include = [
     "pipeline.py",
     "box_client.py",
     "models.py",
+    "llm_provider.py",
     "voice.py",
     "ui.py",
     "feedback.py",

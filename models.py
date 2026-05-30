@@ -59,8 +59,8 @@ class PipelineConfig(BaseModel):
     repo: Optional[Path] = None
     dry_run: bool = False
     box_dev_token: Optional[str] = None
-    aws_region: str
-    bedrock_model_id: str
+    aws_region: str = "us-east-1"
+    bedrock_model_id: str = "us.anthropic.claude-sonnet-4-6"
     box_root_folder_id: str = "0"
 
 

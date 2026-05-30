@@ -17,7 +17,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-_REQUIRED_VARS = ["AWS_REGION", "BEDROCK_MODEL_ID"]
+_REQUIRED_VARS = []  # Provider-specific validation handled by llm_provider module
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,8 +79,8 @@ def run(
         repo=repo,
         dry_run=dry_run,
         box_dev_token=os.environ.get("BOX_TOKEN"),
-        aws_region=env["AWS_REGION"],
-        bedrock_model_id=env["BEDROCK_MODEL_ID"],
+        aws_region=env.get("AWS_REGION") or os.environ.get("AWS_REGION", "us-east-1"),
+        bedrock_model_id=env.get("BEDROCK_MODEL_ID") or os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6"),
         box_root_folder_id=box_folder,
     )
 
@@ -150,7 +150,7 @@ def record(
         dry_run=dry_run,
         box_dev_token=os.environ.get("BOX_TOKEN"),
         aws_region=os.environ.get("AWS_REGION", "us-east-1"),
-        bedrock_model_id=os.environ["BEDROCK_MODEL_ID"],
+        bedrock_model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6"),
     )
 
     from pipeline import run_pipeline

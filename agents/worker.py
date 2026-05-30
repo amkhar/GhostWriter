@@ -127,17 +127,13 @@ def run_worker(
 def _run_strands_agent(task_id: str, task_description: str, working_copy: Path, model_id: str) -> str:
     """Default: use Strands SDK agent."""
     from strands import Agent
-    from strands.models import BedrockModel
+    from llm_provider import get_model
     from agents.tools import (
         make_read_file_tool, make_write_file_tool,
         make_grep_tool, make_list_dir_tool, make_run_shell_tool,
     )
 
-    model = BedrockModel(
-        model_id=model_id,
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-        max_tokens=8192,
-    )
+    model = get_model(model_id=model_id, max_tokens=8192)
     worker = Agent(
         model=model,
         system_prompt=WORKER_SYSTEM_PROMPT.format(working_copy=str(working_copy)),

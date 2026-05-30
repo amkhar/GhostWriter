@@ -9,7 +9,6 @@ import uuid
 from pathlib import Path
 
 from strands import Agent
-from strands.models import BedrockModel
 import os
 
 from box_client import BoxClient, _RECURRENCE_PROMPT
@@ -281,8 +280,8 @@ def classify(neglected: list[NeglectedTask], model_id: str, repo: Path = None) -
     if AGENT_BACKEND in ("kiro", "claude-code") and repo:
         return _classify_via_agent(neglected, repo)
 
-    aws_region = os.environ.get("AWS_REGION", "us-east-1")
-    model = BedrockModel(model_id=model_id, region_name=aws_region)
+    from llm_provider import get_model
+    model = get_model(model_id=model_id)
     classifier = Agent(model=model, system_prompt="You are a JSON-only responder.")
 
     for task in neglected:
