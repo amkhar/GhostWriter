@@ -26,6 +26,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 load_dotenv(PROJECT_ROOT / ".env")
 
+# Translate BEDROCK_API_KEY to boto3 bearer token
+if os.environ.get("BEDROCK_API_KEY") and not os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
+    os.environ["AWS_BEARER_TOKEN_BEDROCK"] = os.environ["BEDROCK_API_KEY"]
+
 DB_PATH = Path(__file__).resolve().parent.parent / "ghostwriter.db"
 
 # ---------- Database ---------- #
@@ -51,6 +55,31 @@ def init_db():
             tasks_json TEXT,
             results_json TEXT,
             stats_json TEXT
+        );
+        CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            reason TEXT,
+            auto_doable INTEGER DEFAULT 0,
+            category TEXT,
+            reasoning TEXT,
+            user_guidance TEXT,
+            FOREIGN KEY (run_id) REFERENCES runs(id)
+        );
+        CREATE TABLE IF NOT EXISTS agent_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            success INTEGER DEFAULT 0,
+            summary TEXT,
+            diff TEXT,
+            test_status TEXT,
+            error TEXT,
+            branch TEXT,
+            created_at TEXT,
+            FOREIGN KEY (run_id) REFERENCES runs(id)
         );
     """)
     conn.close()
@@ -193,6 +222,13 @@ async def recording_status():
 
 # ---------- Pipeline endpoints ---------- #
 
+@app.get("/api/pipeline/stream")
+async def pipeline_stream(transcript: str = "", repo: str = "", dry_run: bool = False):
+    """SSE endpoint for pipeline streaming (GET for EventSource compatibility)."""
+    req = PipelineRunRequest(transcript=transcript or None, repo=repo or None, dry_run=dry_run)
+    return await pipeline_run(req)
+
+
 @app.post("/api/pipeline/run")
 async def pipeline_run(req: PipelineRunRequest):
     """Run the pipeline, streaming SSE events for each stage."""
@@ -309,19 +345,50 @@ async def pipeline_run(req: PipelineRunRequest):
                 auto_tasks = [t for t in neglected if t.auto_doable]
                 if auto_tasks:
                     emit("stage", {"stage": 5, "name": "Implement", "status": "running",
-                                   "message": f"Implementing {len(auto_tasks)} task(s)"})
+                                   "message": f"Implementing {len(auto_tasks)} task(s) in parallel"})
 
-                    from agents.orchestrator import orchestrate
                     for t in auto_tasks:
-                        emit("agent", {"task_id": t.id, "title": t.title, "status": "working",
-                                       "message": f"Agent working on: {t.title}"})
+                        emit("agent", {"task_id": t.id, "title": t.title, "status": "queued",
+                                       "message": "Waiting to start", "branch": f"ghostwriter/{t.id[:30]}"})
 
-                    results, _ = orchestrate(neglected, config.repo, config.bedrock_model_id, run_id)
+                    # Run orchestrator — it runs tasks in parallel via ThreadPoolExecutor
+                    from agents.orchestrator import orchestrate, _run_task_isolated
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-                    for r in results:
-                        stats["lines_changed"] += len((r.diff or "").split("\n"))
-                        emit("agent", {"task_id": r.task_id, "status": "done" if r.success else "failed",
-                                       "summary": r.summary, "diff": r.diff, "test_status": r.test_status})
+                    results = []
+                    with ThreadPoolExecutor(max_workers=min(len(auto_tasks), 4)) as pool:
+                        futures = {}
+                        for t in auto_tasks:
+                            emit("agent", {"task_id": t.id, "title": t.title, "status": "working",
+                                           "message": "Agent researching codebase...", "branch": f"ghostwriter/{t.id[:30]}"})
+                            future = pool.submit(_run_task_isolated, t, config.repo, config.bedrock_model_id, run_id)
+                            futures[future] = t
+
+                        for future in as_completed(futures):
+                            t = futures[future]
+                            try:
+                                result = future.result()
+                                results.append(result)
+                                stats["lines_changed"] += len((result.diff or "").split("\n"))
+                                emit("agent", {
+                                    "task_id": result.task_id,
+                                    "title": t.title,
+                                    "status": "done" if result.success else "failed",
+                                    "summary": result.summary,
+                                    "diff": result.diff,
+                                    "test_status": result.test_status,
+                                    "error": result.error,
+                                    "branch": f"ghostwriter/{t.id[:30]}",
+                                })
+                            except Exception as ex:
+                                from models import WorkerResult
+                                results.append(WorkerResult(task_id=t.id, success=False, summary="Error", error=str(ex)))
+                                emit("agent", {"task_id": t.id, "title": t.title, "status": "failed",
+                                               "message": str(ex), "branch": f"ghostwriter/{t.id[:30]}"})
+
+                    emit("stage", {"stage": 5, "name": "Implement", "status": "complete",
+                                   "message": f"{len([r for r in results if r.success])}/{len(results)} succeeded",
+                                   "stats": stats.copy()})
 
                     emit("stage", {"stage": 5, "name": "Implement", "status": "complete",
                                    "message": f"Completed {len(results)} task(s)", "stats": stats.copy()})
@@ -344,6 +411,12 @@ async def pipeline_run(req: PipelineRunRequest):
                               (datetime.utcnow().isoformat(), "complete", report.to_markdown(),
                                json.dumps([t.model_dump() for t in neglected]),
                                json.dumps([r.model_dump() for r in results]), json.dumps(stats), run_id))
+                for t in neglected:
+                    conn2.execute("INSERT OR REPLACE INTO tasks (id, run_id, title, description, reason, auto_doable, category, reasoning, user_guidance) VALUES (?,?,?,?,?,?,?,?,?)",
+                                  (t.id, run_id, t.title, t.description, t.reason, int(t.auto_doable), t.auto_doable_category, t.classification_reasoning, t.user_guidance))
+                for r in results:
+                    conn2.execute("INSERT INTO agent_results (run_id, task_id, success, summary, diff, test_status, error, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                                  (run_id, r.task_id, int(r.success), r.summary, r.diff, r.test_status, r.error, datetime.utcnow().isoformat()))
                 conn2.commit()
                 conn2.close()
 
@@ -373,19 +446,49 @@ async def pipeline_run(req: PipelineRunRequest):
 @app.get("/api/pipeline/runs")
 async def list_runs():
     conn = get_db()
-    rows = conn.execute("SELECT id, started_at, finished_at, status, dry_run, stats_json FROM runs ORDER BY started_at DESC LIMIT 50").fetchall()
+    rows = conn.execute("SELECT id, started_at, finished_at, status, dry_run, stats_json, transcript FROM runs ORDER BY started_at DESC LIMIT 50").fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    results = []
+    for r in rows:
+        d = dict(r)
+        d["stats"] = json.loads(d.pop("stats_json") or "{}")
+        d["transcript_preview"] = (d.get("transcript") or "")[:100]
+        results.append(d)
+    return results
 
 
 @app.get("/api/pipeline/runs/{run_id}")
 async def get_run(run_id: str):
     conn = get_db()
     row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
-    conn.close()
     if not row:
+        conn.close()
         raise HTTPException(404, "Run not found")
-    return dict(row)
+    run = dict(row)
+    run["tasks"] = [dict(r) for r in conn.execute("SELECT * FROM tasks WHERE run_id = ?", (run_id,)).fetchall()]
+    run["agent_results"] = [dict(r) for r in conn.execute("SELECT * FROM agent_results WHERE run_id = ?", (run_id,)).fetchall()]
+    conn.close()
+    return run
+
+
+@app.get("/api/tasks")
+async def list_all_tasks():
+    conn = get_db()
+    rows = conn.execute("SELECT t.*, r.started_at as run_date FROM tasks t JOIN runs r ON t.run_id = r.id ORDER BY r.started_at DESC LIMIT 100").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/tasks/{task_id}")
+async def get_task(task_id: str):
+    conn = get_db()
+    task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if not task:
+        conn.close()
+        raise HTTPException(404, "Task not found")
+    results = conn.execute("SELECT * FROM agent_results WHERE task_id = ?", (task_id,)).fetchall()
+    conn.close()
+    return {"task": dict(task), "results": [dict(r) for r in results]}
 
 
 if __name__ == "__main__":
