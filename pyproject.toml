@@ -21,6 +21,7 @@ dependencies = [
     "hypothesis>=6.100",
     "pytest>=8.0",
     "pytest-mock>=3.14",
+    "flask>=3.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -33,11 +34,16 @@ only-include = [
     "voice.py",
     "ui.py",
     "feedback.py",
+    "backend_integrations.py",
+    "ghostwriter_cli.py", 
+    "start_backend_services.py",
     "agents",
 ]
 
 [project.scripts]
 ghostwriter = "main:app"
+ghostwriter-cli = "ghostwriter_cli:main"
+ghostwriter-backend = "start_backend_services:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
