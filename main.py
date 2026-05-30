@@ -123,8 +123,9 @@ def record(
     from ui import show_banner
     show_banner()
 
-    from voice import record_meeting
-    transcript_path = record_meeting(output)
+    from transcript_providers import registry
+    provider = registry.get()
+    transcript_path = provider.transcribe(output)
 
     # Ask if user wants to run the pipeline
     from rich.console import Console
