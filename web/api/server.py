@@ -257,7 +257,7 @@ async def pipeline_run(req: PipelineRunRequest):
                 loop.call_soon_threadsafe(queue.put_nowait, (event_type, data))
 
             try:
-                emit("stage", {"stage": 0, "name": "Setup", "status": "complete", "message": "Pipeline initialized"})
+                emit("stage", {"stage": 0, "name": "Setup", "status": "complete", "message": "Pipeline initialized", "run_id": run_id})
 
                 # Build config
                 config_kwargs = {
@@ -355,13 +355,24 @@ async def pipeline_run(req: PipelineRunRequest):
                     from agents.orchestrator import orchestrate, _run_task_isolated
                     from concurrent.futures import ThreadPoolExecutor, as_completed
 
+                    def make_progress_cb(task_title):
+                        def progress_cb(task_id: str, msg: str, status: str = "working"):
+                            emit("agent", {
+                                "task_id": task_id,
+                                "title": task_title,
+                                "status": status,
+                                "message": msg,
+                                "branch": f"ghostwriter/{task_id[:30]}",
+                            })
+                        return progress_cb
+
                     results = []
                     with ThreadPoolExecutor(max_workers=min(len(auto_tasks), 4)) as pool:
                         futures = {}
                         for t in auto_tasks:
                             emit("agent", {"task_id": t.id, "title": t.title, "status": "working",
                                            "message": "Agent researching codebase...", "branch": f"ghostwriter/{t.id[:30]}"})
-                            future = pool.submit(_run_task_isolated, t, config.repo, config.bedrock_model_id, run_id)
+                            future = pool.submit(_run_task_isolated, t, config.repo, config.bedrock_model_id, run_id, make_progress_cb(t.title))
                             futures[future] = t
 
                         for future in as_completed(futures):
@@ -489,6 +500,176 @@ async def get_task(task_id: str):
     results = conn.execute("SELECT * FROM agent_results WHERE task_id = ?", (task_id,)).fetchall()
     conn.close()
     return {"task": dict(task), "results": [dict(r) for r in results]}
+
+
+@app.get("/api/tasks/{task_id}/override")
+async def task_override(task_id: str, run_id: str, guidance: str):
+    """
+    Override a skipped task with user guidance, persist it,
+    and execute the agent workspace, streaming progress.
+    """
+    # 1. Fetch task and run from DB
+    conn = get_db()
+    task_row = conn.execute("SELECT * FROM tasks WHERE id = ? AND run_id = ?", (task_id, run_id)).fetchone()
+    run_row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    if not task_row or not run_row:
+        conn.close()
+        raise HTTPException(404, "Task or Run not found")
+    
+    task_data = dict(task_row)
+    conn.close()
+
+    # 2. Record override in feedback store (.ghostwriter_feedback.jsonl)
+    from feedback import record_override
+    record_override(
+        task_id=task_id,
+        title=task_data["title"],
+        description=task_data["description"],
+        user_guidance=guidance,
+        classification_reasoning=task_data["reasoning"],
+    )
+
+    # 3. Update task in database
+    conn = get_db()
+    conn.execute(
+        "UPDATE tasks SET auto_doable = 1, user_guidance = ?, category = 'user-directed', reasoning = ? WHERE id = ? AND run_id = ?",
+        (guidance, f"User override: {guidance[:80]}", task_id, run_id)
+    )
+    conn.commit()
+    conn.close()
+
+    # Also update tasks_json inside runs table
+    conn = get_db()
+    updated_tasks = []
+    task_rows = conn.execute("SELECT * FROM tasks WHERE run_id = ?", (run_id,)).fetchall()
+    for r in task_rows:
+        t = dict(r)
+        updated_tasks.append({
+            "id": t["id"],
+            "title": t["title"],
+            "description": t["description"],
+            "reason": t["reason"],
+            "auto_doable": bool(t["auto_doable"]),
+            "auto_doable_category": t["category"],
+            "classification_reasoning": t["reasoning"],
+            "user_guidance": t["user_guidance"],
+        })
+    conn.execute("UPDATE runs SET tasks_json = ? WHERE id = ?", (json.dumps(updated_tasks), run_id))
+    conn.commit()
+    conn.close()
+
+    # 4. Stream execution events
+    async def event_generator():
+        loop = asyncio.get_event_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def emit(event_type: str, data: dict):
+            data["timestamp"] = datetime.utcnow().isoformat()
+            loop.call_soon_threadsafe(queue.put_nowait, (event_type, data))
+
+        def run_agent_in_thread():
+            from models import NeglectedTask
+            from agents.orchestrator import _run_task_isolated
+            import os
+
+            # Rebuild a NeglectedTask object
+            task_obj = NeglectedTask(
+                id=task_id,
+                title=task_data["title"],
+                description=task_data["description"],
+                reason=task_data["reason"] or "recurring across meetings",
+                auto_doable=True,
+                auto_doable_category="user-directed",
+                classification_reasoning=f"User override: {guidance[:80]}",
+                user_guidance=guidance,
+            )
+
+            # Rebuild configuration
+            model_id = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-3-5-sonnet-20241022-v2:0")
+            repo_path = PROJECT_ROOT
+
+            def progress_cb(tid: str, msg: str, status: str = "working"):
+                emit("agent", {
+                    "task_id": tid,
+                    "title": task_data["title"],
+                    "status": status,
+                    "message": msg,
+                    "branch": f"ghostwriter/{tid[:30]}",
+                })
+
+            emit("agent", {
+                "task_id": task_id,
+                "title": task_data["title"],
+                "status": "working",
+                "message": "Initializing custom workspace...",
+                "branch": f"ghostwriter/{task_id[:30]}",
+            })
+
+            try:
+                result = _run_task_isolated(task_obj, repo_path, model_id, run_id + "-ovr", progress_cb)
+                
+                # Save agent result to DB
+                conn2 = get_db()
+                conn2.execute(
+                    "INSERT INTO agent_results (run_id, task_id, success, summary, diff, test_status, error, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (run_id, task_id, int(result.success), result.summary, result.diff, result.test_status, result.error, datetime.utcnow().isoformat())
+                )
+                conn2.commit()
+                
+                # Update runs table results_json
+                existing_results_rows = conn2.execute("SELECT * FROM agent_results WHERE run_id = ?", (run_id,)).fetchall()
+                results_list = []
+                for r in existing_results_rows:
+                    res = dict(r)
+                    results_list.append({
+                        "task_id": res["task_id"],
+                        "success": bool(res["success"]),
+                        "summary": res["summary"],
+                        "diff": res["diff"],
+                        "test_status": res["test_status"],
+                        "error": res["error"],
+                    })
+                conn2.execute("UPDATE runs SET results_json = ? WHERE id = ?", (json.dumps(results_list), run_id))
+                conn2.commit()
+                conn2.close()
+
+                # Emit final agent update
+                emit("agent", {
+                    "task_id": task_id,
+                    "title": task_data["title"],
+                    "status": "done" if result.success else "failed",
+                    "summary": result.summary,
+                    "diff": result.diff,
+                    "test_status": result.test_status,
+                    "error": result.error,
+                    "branch": f"ghostwriter/{task_id[:30]}",
+                })
+                emit("complete", {"task_id": task_id, "success": result.success})
+
+            except Exception as e:
+                emit("agent", {
+                    "task_id": task_id,
+                    "title": task_data["title"],
+                    "status": "failed",
+                    "message": f"Orchestrator error: {str(e)}",
+                    "error": str(e),
+                    "branch": f"ghostwriter/{task_id[:30]}",
+                })
+                emit("complete", {"task_id": task_id, "success": False, "error": str(e)})
+
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        thread = threading.Thread(target=run_agent_in_thread, daemon=True)
+        thread.start()
+
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            event_type, data = item
+            yield {"event": event_type, "data": json.dumps(data)}
+
+    return EventSourceResponse(event_generator())
 
 
 if __name__ == "__main__":

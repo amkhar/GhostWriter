@@ -9,7 +9,6 @@ import uuid
 from pathlib import Path
 
 from strands import Agent
-from strands.models import BedrockModel
 import os
 
 from box_client import BoxClient, _RECURRENCE_PROMPT
@@ -21,6 +20,7 @@ from models import (
     Task,
     WorkerResult,
 )
+from providers import ProviderFactory
 
 logger = logging.getLogger("ghostwriter.pipeline")
 
@@ -124,9 +124,10 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
     neglected = enrich(neglected)
 
     # Stage 4: Classify
-    if has_ui: show_stage(4, "Classify", "Bedrock LLM deciding which tasks are safe to auto-implement")
-    logger.info("[GhostWriter][pipeline] Stage 4: Classify")
-    neglected = classify(neglected, config.bedrock_model_id, config.repo)
+    provider_name = os.environ.get("LLM_PROVIDER", "bedrock")
+    if has_ui: show_stage(4, "Classify", f"{provider_name.upper()} LLM deciding which tasks are safe to auto-implement")
+    logger.info("[GhostWriter][pipeline] Stage 4: Classify using %s", provider_name)
+    neglected = classify(neglected, config, config.repo)
     if has_ui:
         for t in neglected:
             show_classification(t)
@@ -155,7 +156,7 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
         if has_ui: show_stage(5, "Implement", f"Starting {len(auto_now)} task(s) in parallel — each on its own branch")
         logger.info("[GhostWriter][pipeline] Stage 5-6: Starting %d auto-doable tasks in parallel", len(auto_now))
         pool = ThreadPoolExecutor(max_workers=1)
-        bg_future = pool.submit(orchestrate, neglected, config.repo, config.bedrock_model_id, run_id)
+        bg_future = pool.submit(orchestrate, neglected, config.repo, config, run_id)
 
     # Meanwhile, prompt user for overrides on skipped tasks
     if skipped and sys.stdin.isatty():
@@ -164,7 +165,7 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
         newly_approved = [t for t in neglected if t.auto_doable and t.user_guidance and t not in auto_now]
         if newly_approved:
             logger.info("[GhostWriter][pipeline] Running %d user-overridden tasks", len(newly_approved))
-            override_results, _ = orchestrate(neglected, config.repo, config.bedrock_model_id, run_id + "-ovr")
+            override_results, _ = orchestrate(neglected, config.repo, config, run_id + "-ovr")
         else:
             override_results = []
     else:
@@ -271,17 +272,36 @@ def detect_recurrence(file_ids: list[str], box: BoxClient) -> list[NeglectedTask
     return neglected
 
 
-def classify(neglected: list[NeglectedTask], model_id: str, repo: Path = None) -> list[NeglectedTask]:
-    """Use Bedrock LLM to classify each NeglectedTask with codebase research."""
+def classify(neglected: list[NeglectedTask], config: PipelineConfig, repo: Path = None) -> list[NeglectedTask]:
+    """Use configured LLM provider to classify each NeglectedTask with codebase research."""
     from agents.worker import AGENT_BACKEND
 
     # If using an external agent (kiro/claude-code), let IT do the research + classification
     if AGENT_BACKEND in ("kiro", "claude-code") and repo:
         return _classify_via_agent(neglected, repo)
 
-    aws_region = os.environ.get("AWS_REGION", "us-east-1")
-    model = BedrockModel(model_id=model_id, region_name=aws_region)
-    classifier = Agent(model=model, system_prompt="You are a JSON-only responder.")
+    # Create provider and agent
+    try:
+        provider = ProviderFactory.create_provider()
+        model_config = provider.get_default_model_config()
+        
+        # Override with config-specific model if using Bedrock (backward compatibility)
+        if provider.provider_name == "bedrock" and hasattr(config, 'bedrock_model_id'):
+            model_config.model_id = config.bedrock_model_id
+        
+        classifier = provider.create_agent(
+            model_config=model_config,
+            system_prompt="You are a JSON-only responder."
+        )
+        
+    except Exception as e:
+        logger.error("[GhostWriter][classify] Failed to create provider: %s", e)
+        # Fall back to the original Bedrock implementation
+        from strands.models import BedrockModel
+        aws_region = os.environ.get("AWS_REGION", "us-east-1")
+        model_id = getattr(config, 'bedrock_model_id', os.environ.get("BEDROCK_MODEL_ID"))
+        model = BedrockModel(model_id=model_id, region_name=aws_region)
+        classifier = Agent(model=model, system_prompt="You are a JSON-only responder.")
 
     for task in neglected:
         # Fast-path: unsafe keywords → false
@@ -307,7 +327,7 @@ def classify(neglected: list[NeglectedTask], model_id: str, repo: Path = None) -
                 task.auto_doable = False
                 task.classification_reasoning = "Could not parse classifier response"
         except Exception as e:
-            logger.error("[GhostWriter][classify][%s] Bedrock error: %s", task.id, e)
+            logger.error("[GhostWriter][classify][%s] LLM error: %s", task.id, e)
             task.auto_doable = False
             task.classification_reasoning = f"Classification failed: {e}"
 

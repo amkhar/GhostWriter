@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "ghostwriter"
 version = "0.1.0"
-description = "Turn standups into shipped code using Box AI and AWS Bedrock"
+description = "Turn standups into shipped code using Box AI and multiple LLM providers"
 requires-python = ">=3.11"
 dependencies = [
     "typer>=0.12",
@@ -23,6 +23,19 @@ dependencies = [
     "pytest-mock>=3.14",
 ]
 
+[project.optional-dependencies]
+gcp = [
+    "google-cloud-aiplatform>=1.38.0",
+    "google-auth>=2.16.0",
+]
+azure = [
+    # Azure OpenAI uses the OpenAI-compatible API which is already included in strands-agents
+]
+all = [
+    "google-cloud-aiplatform>=1.38.0",
+    "google-auth>=2.16.0",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["."]
 only-include = [
@@ -34,6 +47,7 @@ only-include = [
     "ui.py",
     "feedback.py",
     "agents",
+    "providers",
 ]
 
 [project.scripts]

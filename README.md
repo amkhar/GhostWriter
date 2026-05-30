@@ -10,7 +10,7 @@ GhostWriter listens to your standup meetings, identifies the tasks your team kee
 
 ```
 🎙️ Record standup → 📝 Transcribe (Deepgram) → ☁️ Upload to Box
-    → 🤖 Box AI finds neglected tasks → 🧠 Bedrock classifies safety
+    → 🤖 Box AI finds neglected tasks → 🧠 LLM classifies safety
     → ⚙️ Agents implement in parallel → 🚀 Push branches to GitHub
 ```
 
@@ -19,7 +19,7 @@ GhostWriter listens to your standup meetings, identifies the tasks your team kee
 3. **Ingest** — Transcripts upload to Box for AI processing
 4. **Extract** — Box AI Extract pulls structured tasks from each transcript
 5. **Recurrence** — Box AI Ask identifies tasks that keep coming up but never get done
-6. **Classify** — Bedrock LLM (with codebase research) decides which are safe to auto-implement
+6. **Classify** — Your chosen LLM (with codebase research) decides which are safe to auto-implement
 7. **Implement** — Agents implement tasks in parallel, each on its own branch
 8. **Push** — Each completed task gets its own branch pushed to GitHub
 
@@ -32,19 +32,69 @@ GhostWriter listens to your standup meetings, identifies the tasks your team kee
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
 
+# Install optional provider dependencies (choose your provider)
+pip install -e ".[gcp]"    # For Google Cloud Platform
+pip install -e ".[all]"    # For all providers
+
 # Configure
 cp .env.example .env
-# Fill in: BOX_CLIENT_ID_A, BOX_SECRET_A, BOX_ENTERPRISE_ID,
-#          AWS_REGION, BEDROCK_MODEL_ID, BEDROCK_API_KEY, DEEPGRAM_API_KEY
+# Configure your chosen LLM provider + Box + Deepgram API keys
+
+# Check provider status
+python main.py providers
 
 # Run with voice recording
-python main.py record --repo /path/to/your/repo
+python main.py record --repo /path/to/your/repo --provider bedrock
 
 # Run on existing transcripts
 python main.py run --transcripts ./sample --repo /path/to/your/repo
 
 # Dry run (classify only, no code changes)
 python main.py run --transcripts ./sample --dry-run
+```
+
+---
+
+## LLM Provider Support
+
+GhostWriter supports multiple LLM providers for classification and code generation:
+
+### AWS Bedrock (default)
+```bash
+# .env configuration
+LLM_PROVIDER=bedrock
+AWS_REGION=us-east-1
+BEDROCK_MODEL_ID=us.anthropic.claude-3-5-sonnet-20241022-v2:0
+BEDROCK_API_KEY=your_api_key  # OR use AWS credentials
+```
+
+### Google Cloud Platform (Vertex AI)
+```bash
+# Install dependencies
+pip install -e ".[gcp]"
+
+# .env configuration
+LLM_PROVIDER=gcp
+GCP_PROJECT_ID=your-project-id
+GCP_LOCATION=us-central1
+GCP_MODEL_ID=claude-3-5-sonnet@20241022
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+```
+
+### Microsoft Azure OpenAI
+```bash
+# .env configuration
+LLM_PROVIDER=azure
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_OPENAI_API_KEY=your_api_key
+AZURE_OPENAI_DEPLOYMENT_NAME=your-deployment-name
+AZURE_MODEL_ID=gpt-4o
+```
+
+### Auto-detection
+GhostWriter can automatically detect the best available provider:
+```bash
+python main.py providers  # Show current status
 ```
 
 ---
@@ -68,7 +118,7 @@ Set `GHOSTWRITER_AGENT` to swap the implementation engine:
 
 | Value | Engine | Best for |
 |---|---|---|
-| `strands` (default) | Strands SDK + Bedrock | Simple tasks, no extra setup |
+| `strands` (default) | Strands SDK + your LLM provider | Simple tasks, configurable provider |
 | `kiro` | kiro-cli | Complex tasks, loops, better tool use |
 | `claude-code` | Anthropic claude CLI | Complex tasks, alternative model |
 
@@ -119,8 +169,8 @@ BOX_ENTERPRISE_ID=your_enterprise_id
 ### Box (Developer token — quick testing)
 Expires every 60 minutes. Set `BOX_TOKEN=...` in `.env`.
 
-### AWS Bedrock
-Uses Bedrock API key (bearer token). Set `BEDROCK_API_KEY=...` in `.env`.
+### LLM Provider Authentication
+See the [provider configuration section](#llm-provider-support) above for your chosen provider.
 
 ### Deepgram (voice recording)
 Free $200 credit at https://console.deepgram.com. Set `DEEPGRAM_API_KEY=...` in `.env`.
@@ -142,13 +192,20 @@ Free $200 credit at https://console.deepgram.com. Set `DEEPGRAM_API_KEY=...` in 
 
 ```
 GhostWriter/
-├── main.py              # CLI: run + record commands
+├── main.py              # CLI: run + record + providers commands
 ├── pipeline.py          # 7-stage pipeline with parallel execution
 ├── box_client.py        # Box API (CCG + dev token auth)
 ├── models.py            # Pydantic data models
 ├── voice.py             # Deepgram live mic transcription
 ├── ui.py                # Rich terminal UI (cards, spinners, panels)
 ├── feedback.py          # User override store (JSONL for RL)
+├── providers/           # LLM provider abstraction
+│   ├── __init__.py      # Provider factory and exports
+│   ├── base.py          # Base provider interface
+│   ├── bedrock.py       # AWS Bedrock implementation
+│   ├── gcp.py           # Google Cloud Platform implementation
+│   ├── azure.py         # Microsoft Azure implementation
+│   └── factory.py       # Provider factory and auto-detection
 ├── agents/
 │   ├── orchestrator.py  # Parallel task runner (ThreadPoolExecutor)
 │   ├── worker.py        # Pluggable agent backends (strands/kiro/claude)

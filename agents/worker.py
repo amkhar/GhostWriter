@@ -7,7 +7,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from models import WorkerResult
+from typing import Callable, Optional, Union
+
+from models import WorkerResult, PipelineConfig
 
 logger = logging.getLogger("ghostwriter.worker")
 
@@ -27,11 +29,19 @@ Rules:
 """
 
 
-def run_worker(task_id: str, task_description: str, working_copy: Path, model_id: str) -> WorkerResult:
+def run_worker(
+    task_id: str,
+    task_description: str,
+    working_copy: Path,
+    config: Union[str, PipelineConfig],  # Support both legacy model_id string and new config
+    progress_cb: Optional[Callable[[str, str, str], None]] = None,
+) -> WorkerResult:
     """Run a worker agent for a single task; return WorkerResult."""
     logger.info("[GhostWriter][worker][%s] Starting worker (backend=%s)", task_id, AGENT_BACKEND)
 
     # Baseline: check if tests already pass before we touch anything
+    if progress_cb:
+        progress_cb(task_id, "Checking baseline tests...", "working")
     baseline_status = _run_tests(working_copy, task_id)
     logger.info("[GhostWriter][worker][%s] Baseline test status: %s", task_id, baseline_status)
 
@@ -39,16 +49,41 @@ def run_worker(task_id: str, task_description: str, working_copy: Path, model_id
     before = _git_head(working_copy)
 
     # Run the coding agent
+    if progress_cb:
+        progress_cb(task_id, f"Running coding agent ({AGENT_BACKEND})...", "working")
     try:
         if AGENT_BACKEND == "kiro":
             summary = _run_kiro_agent(task_id, task_description, working_copy)
         elif AGENT_BACKEND == "claude-code":
             summary = _run_claude_code_agent(task_id, task_description, working_copy)
         else:
-            summary = _run_strands_agent(task_id, task_description, working_copy, model_id)
+            summary = _run_strands_agent(task_id, task_description, working_copy, config)
     except Exception as e:
+        err_str = str(e)
+        # MaxTokens errors often happen mid-edit — check if the agent did useful work first
+        is_max_tokens = "max_tokens" in err_str.lower() or "MaxTokensReachedException" in err_str
+        partial_diff = _git_diff(working_copy)
         logger.error("[GhostWriter][worker][%s] Agent error: %s", task_id, e)
-        return WorkerResult(task_id=task_id, success=False, summary="Agent error", error=str(e))
+
+        if is_max_tokens and partial_diff:
+            # Agent ran out of tokens but made changes — try to keep what it did
+            logger.info("[GhostWriter][worker][%s] Max tokens hit but diff exists — testing if usable", task_id)
+            test_status = _run_tests(working_copy, task_id)
+            if test_status == "passed" or (test_status == "failed" and baseline_status != "passed"):
+                # Changes don't break anything — accept them
+                return WorkerResult(
+                    task_id=task_id, success=True, diff=partial_diff,
+                    summary=f"Partial completion (max tokens hit): {summary if 'summary' in dir() else 'changes preserved'}",
+                    test_status=test_status,
+                )
+            # Tests regressed — revert
+            _git_revert(working_copy, before)
+
+        return WorkerResult(
+            task_id=task_id, success=False,
+            summary="Max tokens reached" if is_max_tokens else "Agent error",
+            error=err_str[:300],
+        )
 
     # Capture diff
     diff = _git_diff(working_copy)
@@ -56,10 +91,14 @@ def run_worker(task_id: str, task_description: str, working_copy: Path, model_id
         return WorkerResult(task_id=task_id, success=True, diff=None, summary=summary, test_status="skipped")
 
     # Run tests after change — only fail if baseline was passing and now it's broken
+    if progress_cb:
+        progress_cb(task_id, "Running verification tests...", "working")
     test_status = _run_tests(working_copy, task_id)
 
     if test_status == "failed" and baseline_status == "passed":
         logger.warning("[GhostWriter][worker][%s] Tests regressed — reverting changes", task_id)
+        if progress_cb:
+            progress_cb(task_id, "Tests regressed! Reverting changes...", "working")
         _git_revert(working_copy, before)
         return WorkerResult(
             task_id=task_id, success=False, diff=diff, summary=summary,
@@ -69,9 +108,13 @@ def run_worker(task_id: str, task_description: str, working_copy: Path, model_id
     # If tests were already failing before, don't penalize the worker
     if test_status == "failed" and baseline_status != "passed":
         logger.info("[GhostWriter][worker][%s] Tests still failing (were already broken), accepting change", task_id)
+        if progress_cb:
+            progress_cb(task_id, "Tests still failing (pre-existing), accepting changes...", "working")
         test_status = "pre-existing failure"
 
     logger.info("[GhostWriter][worker][%s] Done. test_status=%s", task_id, test_status)
+    if progress_cb:
+        progress_cb(task_id, "Completed code implementation!", "working")
     return WorkerResult(
         task_id=task_id, success=True, diff=diff or None, summary=summary, test_status=test_status,
     )
@@ -81,30 +124,78 @@ def run_worker(task_id: str, task_description: str, working_copy: Path, model_id
 # Agent backends
 # ------------------------------------------------------------------ #
 
-def _run_strands_agent(task_id: str, task_description: str, working_copy: Path, model_id: str) -> str:
-    """Default: use Strands SDK agent."""
+def _run_strands_agent(task_id: str, task_description: str, working_copy: Path, config: Union[str, PipelineConfig]) -> str:
+    """Use Strands SDK agent with configurable provider."""
     from strands import Agent
-    from strands.models import BedrockModel
     from agents.tools import (
         make_read_file_tool, make_write_file_tool,
         make_grep_tool, make_list_dir_tool, make_run_shell_tool,
     )
 
-    model = BedrockModel(
-        model_id=model_id,
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-    )
-    worker = Agent(
-        model=model,
-        system_prompt=WORKER_SYSTEM_PROMPT.format(working_copy=str(working_copy)),
-        tools=[
-            make_read_file_tool(working_copy),
-            make_write_file_tool(working_copy),
-            make_grep_tool(working_copy),
-            make_list_dir_tool(working_copy),
-            make_run_shell_tool(working_copy),
-        ],
-    )
+    # Handle backward compatibility with model_id string
+    if isinstance(config, str):
+        # Legacy: direct model_id string, use Bedrock
+        from strands.models import BedrockModel
+        model = BedrockModel(
+            model_id=config,
+            region_name=os.environ.get("AWS_REGION", "us-east-1"),
+            max_tokens=8192,
+        )
+        worker = Agent(
+            model=model,
+            system_prompt=WORKER_SYSTEM_PROMPT.format(working_copy=str(working_copy)),
+            tools=[
+                make_read_file_tool(working_copy),
+                make_write_file_tool(working_copy),
+                make_grep_tool(working_copy),
+                make_list_dir_tool(working_copy),
+                make_run_shell_tool(working_copy),
+            ],
+        )
+    else:
+        # New: use provider system
+        from providers import ProviderFactory
+        try:
+            provider = ProviderFactory.create_provider()
+            model_config = provider.get_default_model_config()
+            
+            # Override with config-specific model if using Bedrock (backward compatibility)
+            if provider.provider_name == "bedrock" and hasattr(config, 'bedrock_model_id'):
+                model_config.model_id = config.bedrock_model_id
+            
+            worker = provider.create_agent(
+                model_config=model_config,
+                system_prompt=WORKER_SYSTEM_PROMPT.format(working_copy=str(working_copy)),
+                tools=[
+                    make_read_file_tool(working_copy),
+                    make_write_file_tool(working_copy),
+                    make_grep_tool(working_copy),
+                    make_list_dir_tool(working_copy),
+                    make_run_shell_tool(working_copy),
+                ]
+            )
+        except Exception as e:
+            logger.warning("[GhostWriter][worker][%s] Provider creation failed, falling back to Bedrock: %s", task_id, e)
+            # Fallback to original Bedrock implementation
+            from strands.models import BedrockModel
+            model_id = getattr(config, 'bedrock_model_id', os.environ.get("BEDROCK_MODEL_ID"))
+            model = BedrockModel(
+                model_id=model_id,
+                region_name=os.environ.get("AWS_REGION", "us-east-1"),
+                max_tokens=8192,
+            )
+            worker = Agent(
+                model=model,
+                system_prompt=WORKER_SYSTEM_PROMPT.format(working_copy=str(working_copy)),
+                tools=[
+                    make_read_file_tool(working_copy),
+                    make_write_file_tool(working_copy),
+                    make_grep_tool(working_copy),
+                    make_list_dir_tool(working_copy),
+                    make_run_shell_tool(working_copy),
+                ],
+            )
+
     response = worker(f"[{task_id}] {task_description}")
     return str(response).strip().splitlines()[-1] if str(response).strip() else "No summary"
 

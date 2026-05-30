@@ -10,8 +10,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
+from typing import Callable, Optional, Union
+
 from agents.worker import run_worker
-from models import NeglectedTask, WorkerResult
+from models import NeglectedTask, WorkerResult, PipelineConfig
 
 logger = logging.getLogger("ghostwriter.orchestrator")
 
@@ -19,8 +21,9 @@ logger = logging.getLogger("ghostwriter.orchestrator")
 def orchestrate(
     neglected: list[NeglectedTask],
     repo: Path,
-    model_id: str,
+    config: Union[str, PipelineConfig],  # Support both legacy model_id string and new config
     run_id: str,
+    progress_cb: Optional[Callable[[str, str, str], None]] = None,
 ) -> tuple[list[WorkerResult], Path]:
     """
     Run auto_doable tasks in parallel — each gets its own repo copy and branch.
@@ -38,7 +41,7 @@ def orchestrate(
     with ThreadPoolExecutor(max_workers=min(len(auto_tasks), 4)) as pool:
         futures = {}
         for task in auto_tasks:
-            future = pool.submit(_run_task_isolated, task, repo, model_id, run_id)
+            future = pool.submit(_run_task_isolated, task, repo, config, run_id, progress_cb)
             futures[future] = task
 
         for future in as_completed(futures):
@@ -57,8 +60,17 @@ def orchestrate(
     return results, repo
 
 
-def _run_task_isolated(task: NeglectedTask, repo: Path, model_id: str, run_id: str) -> WorkerResult:
+def _run_task_isolated(
+    task: NeglectedTask,
+    repo: Path,
+    config: Union[str, PipelineConfig],
+    run_id: str,
+    progress_cb: Optional[Callable[[str, str, str], None]] = None,
+) -> WorkerResult:
     """Run a single task on its own copy of the repo with its own branch."""
+    if progress_cb:
+        progress_cb(task.id, "Copying repository for isolation...", "working")
+
     # Create isolated working copy
     tmp_dir = Path(tempfile.mkdtemp(prefix=f"gw-{run_id}-{task.id[:12]}-"))
     working_copy = tmp_dir / "repo"
@@ -67,6 +79,8 @@ def _run_task_isolated(task: NeglectedTask, repo: Path, model_id: str, run_id: s
 
     # Create unique branch for this task
     branch = f"ghostwriter/{task.id[:30]}-{datetime.utcnow().strftime('%H%M%S')}"
+    if progress_cb:
+        progress_cb(task.id, f"Creating branch: {branch}", "working")
     subprocess.run(["git", "checkout", "-b", branch], cwd=str(working_copy), check=True, capture_output=True)
 
     # Build task description with user guidance
@@ -75,16 +89,23 @@ def _run_task_isolated(task: NeglectedTask, repo: Path, model_id: str, run_id: s
         description += f"\n\nUSER GUIDANCE: {task.user_guidance}"
 
     # Run the worker
-    result = run_worker(task.id, description, working_copy, model_id)
+    result = run_worker(task.id, description, working_copy, config, progress_cb)
 
     if result.success and result.diff:
-        _git_commit(working_copy, task.id, result.summary)
-        _git_push(working_copy, branch)
+        _git_commit(working_copy, task.id, result.summary, progress_cb)
+        _git_push(working_copy, branch, task.id, progress_cb)
 
     return result
 
 
-def _git_commit(working_copy: Path, task_id: str, summary: str) -> None:
+def _git_commit(
+    working_copy: Path,
+    task_id: str,
+    summary: str,
+    progress_cb: Optional[Callable[[str, str, str], None]] = None,
+) -> None:
+    if progress_cb:
+        progress_cb(task_id, "Committing code changes...", "working")
     subprocess.run(["git", "add", "-A"], cwd=str(working_copy), capture_output=True)
     # Truncate summary for commit message
     msg = f"ghostwriter: [{task_id}] {summary[:80]}"
@@ -92,7 +113,14 @@ def _git_commit(working_copy: Path, task_id: str, summary: str) -> None:
     logger.info("[GhostWriter][orchestrator] Committed: %s", msg)
 
 
-def _git_push(working_copy: Path, branch: str) -> None:
+def _git_push(
+    working_copy: Path,
+    branch: str,
+    task_id: str,
+    progress_cb: Optional[Callable[[str, str, str], None]] = None,
+) -> None:
+    if progress_cb:
+        progress_cb(task_id, "Pushing branch to GitHub...", "working")
     r = subprocess.run(
         ["git", "push", "-u", "origin", branch],
         cwd=str(working_copy), capture_output=True, text=True,
