@@ -45,14 +45,33 @@ def show_neglected_tasks(tasks: list[NeglectedTask]):
     table = Table(title="🔍 Neglected Tasks Found", border_style="yellow", show_lines=True)
     table.add_column("Task", style="bold")
     table.add_column("Reason", style="dim")
+    table.add_column("Priority", justify="center")
     table.add_column("Standups", justify="center")
 
     for t in tasks:
         # Extract standup count from reason
         count = t.reason.count("standup") or "?"
-        table.add_row(t.title, t.reason[:60], str(count) if isinstance(count, int) else "3+")
+        priority_str = "-"
+        if t.priority:
+            if t.priority == "high":
+                priority_str = "[bold red]HIGH[/bold red]"
+            else:
+                priority_str = "[green]normal[/green]"
+        table.add_row(t.title, t.reason[:60], priority_str, str(count) if isinstance(count, int) else "3+")
 
     console.print(table)
+
+    # Print Apify public intelligence/evidence if any exist
+    has_any_evidence = any(t.evidence for t in tasks)
+    if has_any_evidence:
+        console.print()
+        console.print("[bold blue]🔍 Apify Public Intelligence Mined:[/bold blue]")
+        for t in tasks:
+            if t.evidence:
+                priority_badge = "[bold red][HIGH][/bold red] " if t.priority == "high" else ""
+                console.print(f"  • [bold cyan]{t.title}[/bold cyan] ({priority_badge}{len(t.evidence)} findings):")
+                for ev in t.evidence:
+                    console.print(f"    - [dim]{ev}[/dim]")
 
 
 def show_classification(task: NeglectedTask):
@@ -103,13 +122,9 @@ def show_worker_result(result: WorkerResult):
             border_style="green",
             width=70,
         ))
-        if result.diff:
-            # Show a compact diff
-            diff_lines = result.diff.strip().split("\n")
-            compact = "\n".join(diff_lines[:20])
-            if len(diff_lines) > 20:
-                compact += f"\n... ({len(diff_lines) - 20} more lines)"
-            console.print(Panel(compact, title="[dim]Git Diff[/dim]", border_style="dim", width=70))
+        if result.branch:
+            branch_link = f"https://github.com/amkhar/GhostWriter/tree/{result.branch}"
+            console.print(f"  **Diff:** [cyan]{branch_link}[/cyan]")
     else:
         console.print(Panel(
             f"[bold red]❌ Failed[/bold red]\n{result.error or result.summary}",
@@ -117,6 +132,9 @@ def show_worker_result(result: WorkerResult):
             border_style="red",
             width=70,
         ))
+        if result.branch:
+            branch_link = f"https://github.com/amkhar/GhostWriter/tree/{result.branch}"
+            console.print(f"  **Diff:** [cyan]{branch_link}[/cyan]")
 
 
 def show_commit(task_id: str, branch: str):

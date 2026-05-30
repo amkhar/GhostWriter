@@ -45,6 +45,7 @@ class WorkerResult(BaseModel):
     summary: str
     test_status: Optional[str] = None  # "passed" | "failed" | "skipped"
     error: Optional[str] = None
+    branch: Optional[str] = None
 
 
 class IngestedFile(BaseModel):

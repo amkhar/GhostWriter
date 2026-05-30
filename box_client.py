@@ -115,6 +115,25 @@ class BoxClient:
     # File operations
     # ------------------------------------------------------------------ #
 
+    def list_folder_files(self, folder_id: str) -> list[dict]:
+        """List all files in a folder. Returns list of {id, name} dicts."""
+        resp = self._session.get(
+            f"{_BOX_API}/folders/{folder_id}/items",
+            params={"fields": "id,name,type", "limit": 1000},
+        )
+        resp.raise_for_status()
+        return [{"id": e["id"], "name": e["name"]}
+                for e in resp.json().get("entries", []) if e["type"] == "file"]
+
+    def delete_file(self, file_id: str) -> bool:
+        """Delete a file from Box. Returns True on success."""
+        resp = self._session.delete(f"{_BOX_API}/files/{file_id}")
+        if resp.status_code in (204, 200):
+            logger.info("[box] Deleted file %s", file_id)
+            return True
+        logger.warning("[box] Failed to delete file %s: %d", file_id, resp.status_code)
+        return False
+
     def upload_transcript(self, file_path: Path, folder_id: str) -> str:
         """Upload a transcript file to Box; return Box file ID."""
         logger.info("[ingest] Uploading %s to folder %s", file_path.name, folder_id)

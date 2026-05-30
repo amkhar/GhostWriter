@@ -96,6 +96,7 @@ def _run_task_isolated(
 
     # Run the worker
     result = run_worker(task.id, description, working_copy, model_id, progress_cb)
+    result.branch = branch
 
     if result.success and result.diff:
         _git_commit(working_copy, task.id, result.summary, progress_cb)

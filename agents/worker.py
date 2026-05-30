@@ -53,7 +53,7 @@ def run_worker(
         progress_cb(task_id, f"Running coding agent ({AGENT_BACKEND})...", "working")
     try:
         if AGENT_BACKEND == "kiro":
-            summary = _run_kiro_agent(task_id, task_description, working_copy)
+            summary = _run_kiro_agent(task_id, task_description, working_copy, progress_cb)
         elif AGENT_BACKEND == "claude-code":
             summary = _run_claude_code_agent(task_id, task_description, working_copy)
         else:
@@ -153,20 +153,37 @@ def _run_strands_agent(task_id: str, task_description: str, working_copy: Path, 
     return str(response).strip().splitlines()[-1] if str(response).strip() else "No summary"
 
 
-def _run_kiro_agent(task_id: str, task_description: str, working_copy: Path) -> str:
+def _run_kiro_agent(
+    task_id: str,
+    task_description: str,
+    working_copy: Path,
+    progress_cb: Optional[Callable[[str, str, str], None]] = None,
+) -> str:
     """Use kiro-cli as the coding agent (local, powerful, tool-use enabled)."""
     prompt = (
         f"In this repo, implement this task:\n\n"
         f"{task_description}\n\n"
         f"Make the minimal change needed. Do not modify unrelated files."
     )
-    r = subprocess.run(
+    logger.info("[GhostWriter][worker][%s] Running kiro-cli chat...", task_id)
+    p = subprocess.Popen(
         ["kiro-cli", "chat", "--trust-all-tools", "--no-interactive", prompt],
-        capture_output=True, text=True, cwd=str(working_copy), timeout=300,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(working_copy),
     )
-    if r.returncode != 0:
-        raise RuntimeError(f"kiro-cli failed: {r.stderr[:500]}")
-    lines = r.stdout.strip().splitlines()
+    lines = []
+    while True:
+        line = p.stdout.readline()
+        if not line:
+            break
+        stripped = line.strip()
+        if stripped:
+            print(f"      [kiro-cli] {stripped}", flush=True)
+            if progress_cb:
+                progress_cb(task_id, f"kiro-cli: {stripped[:120]}", "working")
+            lines.append(stripped)
+    p.wait()
+    if p.returncode != 0:
+        raise RuntimeError(f"kiro-cli failed with exit code {p.returncode}")
     return lines[-1] if lines else "Completed via kiro-cli"
 
 

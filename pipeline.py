@@ -111,7 +111,6 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
     file_ids = [f.box_file_id for f in ingested]
     neglected = detect_recurrence(file_ids, box)
     logger.info("[GhostWriter][pipeline] Found %d neglected tasks", len(neglected))
-    if has_ui and neglected: show_neglected_tasks(neglected)
 
     if not neglected:
         logger.info("[GhostWriter][pipeline] No neglected tasks — producing empty report")
@@ -122,6 +121,9 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
     # Apify enrichment: public-evidence priority + dependency-compat checks (no-op without APIFY_TOKEN)
     from apify_enrich import enrich, scan_competitors
     neglected = enrich(neglected)
+
+    if has_ui:
+        show_neglected_tasks(neglected)
 
     # Stage 4: Classify
     if has_ui: show_stage(4, "Classify", "Bedrock LLM deciding which tasks are safe to auto-implement")
