@@ -46,14 +46,17 @@ def run(
     transcripts: Optional[Path] = typer.Option(None, "--transcripts", help="Directory of .txt/.md transcript files"),
     repo: Optional[Path] = typer.Option(None, "--repo", help="Target repository directory"),
     paste: bool = typer.Option(False, "--paste", help="Read transcript from stdin"),
+    zoom: bool = typer.Option(False, "--zoom", help="Fetch transcripts from Zoom cloud recordings"),
+    zoom_user: str = typer.Option("me", "--zoom-user", help="Zoom user ID or email (default: 'me')"),
+    zoom_from: Optional[str] = typer.Option(None, "--zoom-from", help="Zoom recordings start date (YYYY-MM-DD)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Run stages 1-4 only; no code changes"),
     box_folder: str = typer.Option("0", "--box-folder", help="Box root folder ID (default: root)"),
 ) -> None:
     """Run the full GhostWriter pipeline on existing transcripts."""
     env = _load_and_validate_env()
 
-    if not paste and not transcripts:
-        typer.echo("[GhostWriter] Error: provide --transcripts <dir> or --paste", err=True)
+    if not paste and not transcripts and not zoom:
+        typer.echo("[GhostWriter] Error: provide --transcripts <dir>, --paste, or --zoom", err=True)
         raise typer.Exit(code=1)
 
     if transcripts and not transcripts.is_dir():
@@ -72,6 +75,24 @@ def run(
     if paste:
         typer.echo("[GhostWriter] Reading transcript from stdin...")
         paste_content = sys.stdin.read()
+
+    if zoom:
+        zoom_account = os.environ.get("ZOOM_ACCOUNT_ID")
+        zoom_client_id = os.environ.get("ZOOM_CLIENT_ID")
+        zoom_client_secret = os.environ.get("ZOOM_CLIENT_SECRET")
+        if not all([zoom_account, zoom_client_id, zoom_client_secret]):
+            typer.echo("[GhostWriter] Error: --zoom requires ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET", err=True)
+            raise typer.Exit(code=1)
+        from zoom_client import ZoomClient
+        import tempfile
+        zc = ZoomClient(account_id=zoom_account, client_id=zoom_client_id, client_secret=zoom_client_secret)
+        zoom_dir = Path(tempfile.mkdtemp(prefix="ghostwriter_zoom_"))
+        saved = zc.save_transcripts(zoom_dir, user_id=zoom_user, from_date=zoom_from)
+        if not saved:
+            typer.echo("[GhostWriter] No transcripts found in Zoom recordings.", err=True)
+            raise typer.Exit(code=1)
+        typer.echo(f"[GhostWriter] Fetched {len(saved)} transcript(s) from Zoom")
+        transcripts = zoom_dir
 
     config = PipelineConfig(
         transcripts_dir=transcripts,
