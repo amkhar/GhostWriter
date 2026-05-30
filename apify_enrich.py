@@ -101,3 +101,41 @@ def enrich(tasks: list[NeglectedTask]) -> list[NeglectedTask]:
         logger.info("[apify] enriched %s priority=%s evidence=%d", t.id, t.priority, len(t.evidence))
 
     return tasks
+
+
+# ------------------------------------------------------------------ #
+# Competitor / market-gap scan: which popular integrations are we missing?
+# ------------------------------------------------------------------ #
+
+_COMP_DOMAIN = os.environ.get("APIFY_COMPETITOR_DOMAIN", "AI coding agent")
+# Agent backends GhostWriter already supports (see agents/worker.py GHOSTWRITER_AGENT).
+_SUPPORTED = ["strands", "kiro", "claude-code"]
+# Popular alternatives in the same domain to check the market for.
+_CANDIDATES = [
+    "claude", "cursor", "github copilot", "aider", "windsurf",
+    "devin", "openai codex", "gemini cli", "amazon q developer", "cline",
+]
+
+
+def scan_competitors(domain: str | None = None, supported: list[str] | None = None,
+                     limit: int = 10) -> list[str]:
+    """Use one Apify search to see which popular same-domain integrations show up in the
+    market but aren't supported yet. Returns human-review suggestions (never auto-implemented).
+
+    No-op (returns []) without APIFY_TOKEN.
+    """
+    if not _enabled():
+        return []
+    domain = domain or _COMP_DOMAIN
+    supported_lc = {s.lower() for s in (supported or _SUPPORTED)}
+    items = _search(f"most popular {domain} tools 2026", limit)
+    blob = " ".join((it.get("title", "") + " " + it.get("description", "")) for it in items).lower()
+
+    recs = []
+    for c in _CANDIDATES:
+        if c.lower() in supported_lc:
+            continue
+        if c.lower() in blob:  # the market is talking about it, but we don't support it
+            recs.append(f"Add support for **{c}** — appears in current '{domain}' results but isn't supported yet")
+    logger.info("[apify] competitor scan: %d suggestion(s)", len(recs))
+    return recs[:5]

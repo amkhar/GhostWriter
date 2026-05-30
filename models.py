@@ -69,6 +69,7 @@ class RunReport(BaseModel):
     neglected_tasks: list[NeglectedTask]
     worker_results: list[WorkerResult] = []
     report_box_file_id: Optional[str] = None
+    recommendations: list[str] = []  # competitor/market-gap suggestions via Apify (human review)
 
     def to_markdown(self) -> str:
         lines = [
@@ -102,6 +103,12 @@ class RunReport(BaseModel):
                 if t.classification_reasoning:
                     lines.append(f"- **Reasoning:** {t.classification_reasoning}")
                 lines.append("")
+
+        if self.recommendations:
+            lines.append("## Suggested Integrations (market gaps — human review)")
+            for r in self.recommendations:
+                lines.append(f"- {r}")
+            lines.append("")
 
         if self.dry_run:
             # Dry-run shortlist

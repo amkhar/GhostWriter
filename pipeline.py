@@ -120,7 +120,7 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
         return report
 
     # Apify enrichment: public-evidence priority + dependency-compat checks (no-op without APIFY_TOKEN)
-    from apify_enrich import enrich
+    from apify_enrich import enrich, scan_competitors
     neglected = enrich(neglected)
 
     # Stage 4: Classify
@@ -139,6 +139,7 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
     if config.dry_run:
         logger.info("[GhostWriter][pipeline] Dry run — stopping after classify")
         report = build_report(neglected, [], True, run_id)
+        report.recommendations = scan_competitors()
         _upload_report(report, box, config)
         return report
 
@@ -155,6 +156,7 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
     if has_ui: show_stage(7, "Report", "Building and uploading run report")
     logger.info("[GhostWriter][pipeline] Stage 7: Build report")
     report = build_report(neglected, results, False, run_id)
+    report.recommendations = scan_competitors()
     _upload_report(report, box, config)
     return report
 

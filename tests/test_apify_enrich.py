@@ -70,3 +70,31 @@ def test_report_renders_priority_and_evidence():
     assert "**Priority:** high" in md
     assert "Evidence (via Apify)" in md
     assert "GitHub #142: crash on blank email" in md
+
+
+def test_scan_competitors_noop_without_token():
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("apify_enrich._run_actor") as mock_actor:
+            assert apify_enrich.scan_competitors() == []
+        mock_actor.assert_not_called()
+
+
+def test_scan_competitors_recommends_unsupported_popular_tools():
+    # Market results mention claude + cursor (not supported) and kiro (supported)
+    items = [{"title": "Best AI coding agents: Cursor, Claude, Kiro",
+              "description": "Cursor and Claude lead; Kiro and Aider also popular"}]
+    with patch.dict(os.environ, {"APIFY_TOKEN": "tok"}):
+        with patch("apify_enrich._search", return_value=items):
+            recs = apify_enrich.scan_competitors()
+    joined = " ".join(recs).lower()
+    assert "claude" in joined and "cursor" in joined and "aider" in joined
+    assert "kiro" not in joined  # already supported -> skipped
+
+
+def test_report_renders_recommendations():
+    md = RunReport(
+        run_id="r", dry_run=True, neglected_tasks=[],
+        recommendations=["Add support for **claude** — appears in current results"],
+    ).to_markdown()
+    assert "Suggested Integrations" in md
+    assert "Add support for **claude**" in md
