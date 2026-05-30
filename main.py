@@ -162,5 +162,135 @@ def record(
     console.print("\n" + report.to_markdown())
 
 
+@app.command()
+def metadata(
+    action: str = typer.Argument(..., help="Action: list, complete, skip, reset, clear"),
+    task_id: Optional[str] = typer.Argument(None, help="Task ID (required for complete/skip/reset)"),
+    box_folder: str = typer.Option("0", "--box-folder", help="Box root folder ID (default: root)"),
+) -> None:
+    """Manage task metadata (completion status, etc.)."""
+    
+    # Validate action
+    valid_actions = ["list", "complete", "skip", "reset", "clear"]
+    if action not in valid_actions:
+        typer.echo(f"[GhostWriter] Error: invalid action '{action}'. Valid actions: {', '.join(valid_actions)}", err=True)
+        raise typer.Exit(code=1)
+    
+    # Validate task_id requirement
+    if action in ["complete", "skip", "reset"] and not task_id:
+        typer.echo(f"[GhostWriter] Error: task_id is required for action '{action}'", err=True)
+        raise typer.Exit(code=1)
+    
+    # Initialize Box client (minimal env validation for metadata-only operations)
+    load_dotenv()
+    box_token = os.environ.get("BOX_TOKEN_A")
+    box_client_id = os.environ.get("BOX_CLIENT_ID_A")
+    box_client_secret = os.environ.get("BOX_SECRET_A")
+    
+    if not box_token and not (box_client_id and box_client_secret):
+        typer.echo("[GhostWriter] Error: Box credentials required. Set BOX_TOKEN_A or (BOX_CLIENT_ID_A + BOX_SECRET_A)", err=True)
+        raise typer.Exit(code=1)
+    
+    from box_client import BoxClient
+    from models import TaskStatus
+    
+    try:
+        box = BoxClient(
+            dev_token=box_token,
+            client_id=box_client_id,
+            client_secret=box_client_secret,
+        )
+    except Exception as e:
+        typer.echo(f"[GhostWriter] Error: Failed to initialize Box client: {e}", err=True)
+        raise typer.Exit(code=1)
+    
+    # Execute action
+    try:
+        if action == "list":
+            metadata_dict = box.load_task_metadata(box_folder)
+            
+            if not metadata_dict:
+                typer.echo("No task metadata found.")
+                return
+            
+            typer.echo(f"Found {len(metadata_dict)} tasks:")
+            typer.echo("-" * 80)
+            
+            for tid, metadata in sorted(metadata_dict.items()):
+                status_icon = {
+                    TaskStatus.COMPLETED: "✅",
+                    TaskStatus.SKIPPED: "⏭️", 
+                    TaskStatus.FAILED: "❌",
+                    TaskStatus.ATTEMPTED: "🔄",
+                    TaskStatus.PENDING: "⏸️"
+                }.get(metadata.status, "❓")
+                
+                typer.echo(f"{status_icon} {tid}")
+                typer.echo(f"   Status: {metadata.status.value}")
+                typer.echo(f"   Last Updated: {metadata.last_updated.strftime('%Y-%m-%d %H:%M UTC')}")
+                typer.echo(f"   Attempts: {metadata.attempts}")
+                
+                if metadata.completed_by:
+                    typer.echo(f"   Completed By: {metadata.completed_by}")
+                if metadata.last_error:
+                    typer.echo(f"   Last Error: {metadata.last_error}")
+                if metadata.notes:
+                    typer.echo(f"   Notes: {metadata.notes}")
+                typer.echo()
+        
+        elif action == "complete":
+            box.update_task_status(
+                task_id=task_id,
+                status=TaskStatus.COMPLETED,
+                root_folder_id=box_folder,
+                completed_by="manual",
+                notes="Manually marked as completed via CLI",
+            )
+            typer.echo(f"✅ Marked task '{task_id}' as completed.")
+        
+        elif action == "skip":
+            box.update_task_status(
+                task_id=task_id,
+                status=TaskStatus.SKIPPED,
+                root_folder_id=box_folder,
+                completed_by="manual",
+                notes="Manually marked as skipped via CLI",
+            )
+            typer.echo(f"⏭️  Marked task '{task_id}' as skipped.")
+        
+        elif action == "reset":
+            box.update_task_status(
+                task_id=task_id,
+                status=TaskStatus.PENDING,
+                root_folder_id=box_folder,
+                notes="Reset to pending via CLI",
+            )
+            typer.echo(f"🔄 Reset task '{task_id}' to pending.")
+        
+        elif action == "clear":
+            metadata_dict = box.load_task_metadata(box_folder)
+            
+            if not metadata_dict:
+                typer.echo("No task metadata found to clear.")
+                return
+            
+            typer.echo(f"This will clear metadata for {len(metadata_dict)} tasks:")
+            for tid in sorted(metadata_dict.keys()):
+                typer.echo(f"  - {tid}")
+            
+            confirm = typer.confirm("Are you sure?")
+            if not confirm:
+                typer.echo("Cancelled.")
+                return
+            
+            # Save empty metadata dict
+            box.save_task_metadata({}, box_folder)
+            typer.echo("✅ All task metadata cleared.")
+            
+    except Exception as e:
+        typer.echo(f"[GhostWriter] Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":
     app()

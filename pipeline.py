@@ -7,6 +7,7 @@ import re
 import sys
 import uuid
 from pathlib import Path
+from datetime import datetime, timezone
 
 from strands import Agent
 from strands.models import BedrockModel
@@ -20,6 +21,8 @@ from models import (
     RunReport,
     Task,
     TaskClassification,
+    TaskMetadata,
+    TaskStatus,
     WorkerResult,
 )
 
@@ -115,8 +118,23 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
     file_ids = [f.box_file_id for f in ingested]
     neglected = detect_recurrence(file_ids, box)
     logger.info("[GhostWriter][pipeline] Found %d neglected tasks", len(neglected))
+
+    # Stage 3.5: Load metadata and filter out already handled tasks
+    if has_ui:
+        show_stage(3.5, "Metadata", "Loading task history and filtering completed tasks")
+    logger.info("[GhostWriter][pipeline] Stage 3.5: Load metadata")
+    neglected = load_and_filter_metadata(neglected, box, config)
+    pending_tasks = [t for t in neglected if not t.metadata or t.metadata.status == TaskStatus.PENDING]
+    logger.info("[GhostWriter][pipeline] %d tasks pending after metadata filtering", len(pending_tasks))
+
     if has_ui and neglected:
         show_neglected_tasks(neglected)
+
+    if not pending_tasks and not config.dry_run:
+        logger.info("[GhostWriter][pipeline] No pending tasks — producing report with metadata")
+        report = build_report(neglected, [], config.dry_run, run_id)
+        _upload_report(report, box, config)
+        return report
 
     if not neglected:
         logger.info("[GhostWriter][pipeline] No neglected tasks — producing empty report")
@@ -124,7 +142,7 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
         _upload_report(report, box, config)
         return report
 
-    # Stage 4: Classify
+    # Stage 4: Classify (only for pending tasks)
     if has_ui:
         show_stage(4, "Classify", "Bedrock LLM deciding which tasks are safe to auto-implement")
     logger.info("[GhostWriter][pipeline] Stage 4: Classify")
@@ -134,13 +152,24 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
             show_classification(t)
 
     # Interactive override: let user force-approve skipped tasks with guidance
-    skipped = [t for t in neglected if not t.auto_doable]
+    skipped = [t for t in neglected if not t.auto_doable and 
+               (not t.metadata or t.metadata.status == TaskStatus.PENDING)]
     if skipped and not config.dry_run and sys.stdin.isatty():
-        neglected = _prompt_user_overrides(neglected)
+        neglected = _prompt_user_overrides(neglected, box, config)
 
     if config.dry_run:
         logger.info("[GhostWriter][pipeline] Dry run — stopping after classify")
         report = build_report(neglected, [], True, run_id)
+        _upload_report(report, box, config)
+        return report
+
+    # Filter to only auto-doable pending tasks for implementation
+    implementable = [t for t in neglected if t.auto_doable and 
+                    (not t.metadata or t.metadata.status == TaskStatus.PENDING)]
+    
+    if not implementable:
+        logger.info("[GhostWriter][pipeline] No implementable tasks — producing report")
+        report = build_report(neglected, [], False, run_id)
         _upload_report(report, box, config)
         return report
 
@@ -149,10 +178,13 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
         show_stage(5, "Implement", "Strands agents making code changes")
     logger.info("[GhostWriter][pipeline] Stage 5-6: Orchestrate")
     from agents.orchestrator import orchestrate
-    results, _ = orchestrate(neglected, config.repo, config.bedrock_model_id, run_id)
+    results, _ = orchestrate(implementable, config.repo, config.bedrock_model_id, run_id)
     if has_ui:
         for r in results:
             show_worker_result(r)
+
+    # Update metadata with results
+    update_metadata_with_results(results, box, config)
 
     # Stage 7: Report
     if has_ui:
@@ -243,9 +275,49 @@ def detect_recurrence(file_ids: list[str], box: BoxClient) -> list[NeglectedTask
     return neglected
 
 
+def load_and_filter_metadata(neglected: list[NeglectedTask], box: BoxClient, 
+                            config: PipelineConfig) -> list[NeglectedTask]:
+    """Load task metadata and attach it to neglected tasks."""
+    try:
+        metadata_dict = box.load_task_metadata(config.box_root_folder_id)
+        
+        for task in neglected:
+            if task.id in metadata_dict:
+                task.metadata = metadata_dict[task.id]
+                logger.info("[GhostWriter][metadata] Task %s has status: %s", 
+                           task.id, task.metadata.status.value)
+            else:
+                # Create new metadata entry for tracking
+                task.metadata = TaskMetadata(
+                    task_id=task.id,
+                    status=TaskStatus.PENDING,
+                    last_updated=datetime.now(timezone.utc),
+                )
+                
+        return neglected
+        
+    except Exception as e:
+        logger.warning("[GhostWriter][metadata] Failed to load metadata: %s", e)
+        # Continue without metadata
+        for task in neglected:
+            task.metadata = TaskMetadata(
+                task_id=task.id,
+                status=TaskStatus.PENDING,
+                last_updated=datetime.now(timezone.utc),
+            )
+        return neglected
+
+
 def classify(neglected: list[NeglectedTask], model_id: str, repo: Path = None) -> list[NeglectedTask]:
     """Use Bedrock LLM to classify each NeglectedTask with enhanced codebase research."""
     from agents.worker import AGENT_BACKEND
+
+    # Only classify tasks that are pending
+    pending_tasks = [t for t in neglected if not t.metadata or t.metadata.status == TaskStatus.PENDING]
+    
+    if not pending_tasks:
+        logger.info("[GhostWriter][classify] No pending tasks to classify")
+        return neglected
 
     # If using an external agent (kiro/claude-code), let IT do the research + classification
     if AGENT_BACKEND in ("kiro", "claude-code") and repo:
@@ -256,6 +328,12 @@ def classify(neglected: list[NeglectedTask], model_id: str, repo: Path = None) -
     classifier = Agent(model=model, system_prompt="You are a JSON-only responder.")
 
     for task in neglected:
+        # Skip tasks that are not pending
+        if task.metadata and task.metadata.status != TaskStatus.PENDING:
+            logger.info("[GhostWriter][classify][%s] Skipping non-pending task (status: %s)", 
+                       task.id, task.metadata.status.value)
+            continue
+            
         # Fast-path: unsafe keywords → false
         combined = (task.title + " " + task.description).lower()
         unsafe_found = [kw for kw in _UNSAFE_KEYWORDS if kw in combined]
@@ -332,7 +410,13 @@ def _classify_via_agent(neglected: list[NeglectedTask], repo: Path) -> list[Negl
     import subprocess
     from agents.worker import AGENT_BACKEND
 
-    tasks_json = json.dumps([{"id": t.id, "title": t.title, "description": t.description} for t in neglected])
+    # Only classify pending tasks
+    pending_tasks = [t for t in neglected if not t.metadata or t.metadata.status == TaskStatus.PENDING]
+    
+    if not pending_tasks:
+        return neglected
+    
+    tasks_json = json.dumps([{"id": t.id, "title": t.title, "description": t.description} for t in pending_tasks])
 
     prompt = (
         f"You are classifying tasks for an auto-implementation tool. "
@@ -360,7 +444,7 @@ def _classify_via_agent(neglected: list[NeglectedTask], repo: Path) -> list[Negl
         try:
             results = json.loads(match.group())
             results_map = {item["id"]: item for item in results}
-            for task in neglected:
+            for task in pending_tasks:
                 if task.id in results_map:
                     data = results_map[task.id]
                     
@@ -386,9 +470,9 @@ def _classify_via_agent(neglected: list[NeglectedTask], repo: Path) -> list[Negl
         except json.JSONDecodeError:
             pass
 
-    # Fallback: if agent didn't return parseable JSON, mark all as auto_doable
-    logger.warning("[GhostWriter][classify] Could not parse agent output, defaulting all to auto_doable")
-    for task in neglected:
+    # Fallback: if agent didn't return parseable JSON, mark pending tasks as auto_doable
+    logger.warning("[GhostWriter][classify] Could not parse agent output, defaulting pending tasks to auto_doable")
+    for task in pending_tasks:
         task.auto_doable = True
         task.auto_doable_category = "agent-researched"
         task.classification_reasoning = "Agent researched codebase but output wasn't parseable JSON; defaulting to approve"
@@ -401,6 +485,25 @@ def _classify_via_agent(neglected: list[NeglectedTask], repo: Path) -> list[Negl
             suggested_approach="Agent already performed research and deemed safe"
         )
     return neglected
+
+
+def update_metadata_with_results(results: list[WorkerResult], box: BoxClient, config: PipelineConfig) -> None:
+    """Update task metadata based on worker results."""
+    try:
+        for result in results:
+            status = TaskStatus.COMPLETED if result.success else TaskStatus.FAILED
+            box.update_task_status(
+                task_id=result.task_id,
+                status=status,
+                root_folder_id=config.box_root_folder_id,
+                error=result.error if not result.success else None,
+                completed_by="auto",
+                notes=f"Auto-implementation: {result.summary}",
+            )
+            logger.info("[GhostWriter][metadata] Updated task %s to status %s", 
+                       result.task_id, status.value)
+    except Exception as e:
+        logger.error("[GhostWriter][metadata] Failed to update metadata with results: %s", e)
 
 
 def _research_codebase(task: NeglectedTask, repo: Path) -> str:
@@ -447,14 +550,15 @@ def _extract_keywords(text: str) -> list[str]:
             and w.lower() not in seen and not seen.add(w.lower())]
 
 
-def _prompt_user_overrides(neglected: list[NeglectedTask]) -> list[NeglectedTask]:
+def _prompt_user_overrides(neglected: list[NeglectedTask], box: BoxClient, config: PipelineConfig) -> list[NeglectedTask]:
     """Interactively ask user if they want to force-approve skipped tasks."""
     from rich.console import Console
     from rich.panel import Panel
     from feedback import record_override
 
     console = Console()
-    skipped = [t for t in neglected if not t.auto_doable]
+    skipped = [t for t in neglected if not t.auto_doable and 
+               (not t.metadata or t.metadata.status == TaskStatus.PENDING)]
 
     console.print()
     console.print(Panel(
@@ -473,6 +577,7 @@ def _prompt_user_overrides(neglected: list[NeglectedTask]) -> list[NeglectedTask
         else:
             console.print(f"  [dim]Reason skipped: {task.classification_reasoning}[/dim]")
         console.print(f"  [dim]Description: {task.description[:100]}[/dim]")
+        
         answer = console.input("  [yellow]Provide implementation details (or Enter to skip):[/yellow] ").strip()
 
         if answer:
@@ -496,6 +601,21 @@ def _prompt_user_overrides(neglected: list[NeglectedTask]) -> list[NeglectedTask
                 classification_reasoning=task.classification_reasoning,
             )
             console.print("  [green]✅ Forced auto-doable with your guidance[/green]")
+        else:
+            # Mark as manually skipped in metadata
+            try:
+                box.update_task_status(
+                    task_id=task.id,
+                    status=TaskStatus.SKIPPED,
+                    root_folder_id=config.box_root_folder_id,
+                    completed_by="manual",
+                    notes="User chose to skip during interactive prompt",
+                )
+                if task.metadata:
+                    task.metadata.status = TaskStatus.SKIPPED
+                console.print("  [dim]⏭️  Marked as skipped[/dim]")
+            except Exception as e:
+                logger.warning("[GhostWriter][metadata] Failed to update skipped status: %s", e)
 
     return neglected
 

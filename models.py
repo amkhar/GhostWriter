@@ -16,6 +16,26 @@ class StatusMentioned(str, Enum):
     UNCLEAR = "unclear"
 
 
+class TaskStatus(str, Enum):
+    """Task processing status for metadata tracking."""
+    PENDING = "pending"          # Not yet processed
+    ATTEMPTED = "attempted"      # Auto-implementation was attempted
+    COMPLETED = "completed"      # Successfully implemented
+    SKIPPED = "skipped"         # Manually skipped by user
+    FAILED = "failed"           # Auto-implementation failed
+
+
+class TaskMetadata(BaseModel):
+    """Metadata for tracking task processing status."""
+    task_id: str
+    status: TaskStatus = TaskStatus.PENDING
+    last_updated: datetime
+    attempts: int = 0
+    last_error: Optional[str] = None
+    completed_by: Optional[str] = None  # "auto" or "manual"
+    notes: Optional[str] = None
+
+
 class Task(BaseModel):
     title: str
     description: str
@@ -46,6 +66,7 @@ class NeglectedTask(BaseModel):
     classification_reasoning: Optional[str] = None
     classification: Optional[TaskClassification] = None  # Enhanced classification details
     user_guidance: Optional[str] = None  # user-provided implementation details (skips classification)
+    metadata: Optional[TaskMetadata] = None  # Processing metadata
 
 
 class WorkerResult(BaseModel):
@@ -100,6 +121,24 @@ class RunReport(BaseModel):
                 lines.append(f"- **ID:** `{t.id}`")
                 lines.append(f"- **Description:** {t.description}")
                 lines.append(f"- **Reason:** {t.reason}")
+                
+                # Show metadata status if available
+                if t.metadata:
+                    status_icon = {
+                        TaskStatus.COMPLETED: "✅",
+                        TaskStatus.SKIPPED: "⏭️", 
+                        TaskStatus.FAILED: "❌",
+                        TaskStatus.ATTEMPTED: "🔄",
+                        TaskStatus.PENDING: "⏸️"
+                    }.get(t.metadata.status, "❓")
+                    lines.append(f"- **Status:** {status_icon} {t.metadata.status.value.title()}")
+                    if t.metadata.completed_by:
+                        lines.append(f"- **Completed by:** {t.metadata.completed_by}")
+                    if t.metadata.attempts > 0:
+                        lines.append(f"- **Attempts:** {t.metadata.attempts}")
+                    if t.metadata.notes:
+                        lines.append(f"- **Notes:** {t.metadata.notes}")
+                
                 lines.append(f"- **Auto-doable:** {'✅ Yes' if t.auto_doable else '❌ No'}")
                 if t.auto_doable_category:
                     lines.append(f"- **Category:** {t.auto_doable_category}")
@@ -123,10 +162,11 @@ class RunReport(BaseModel):
 
         if self.dry_run:
             # Dry-run shortlist
-            auto_doable = [t for t in self.neglected_tasks if t.auto_doable]
+            auto_doable = [t for t in self.neglected_tasks if t.auto_doable and 
+                          (not t.metadata or t.metadata.status == TaskStatus.PENDING)]
             lines.append("## Auto-Doable Shortlist (Dry Run)")
             if not auto_doable:
-                lines.append("_No tasks classified as auto-doable._")
+                lines.append("_No tasks classified as auto-doable and pending._")
             else:
                 for t in auto_doable:
                     lines.append(f"- `{t.id}`: {t.title} ({t.auto_doable_category})")
@@ -152,6 +192,17 @@ class RunReport(BaseModel):
                     elif t.classification_reasoning:
                         lines.append(f"**Why it was skipped:** {t.classification_reasoning}")
                     lines.append("")
+
+            # Previously completed tasks
+            completed = [t for t in self.neglected_tasks if 
+                        t.metadata and t.metadata.status in [TaskStatus.COMPLETED, TaskStatus.SKIPPED]]
+            if completed:
+                lines.append("## Previously Handled Tasks")
+                lines.append("_These tasks were found again but have been marked as completed or skipped:_")
+                for t in completed:
+                    status_text = "completed" if t.metadata.status == TaskStatus.COMPLETED else "skipped"
+                    lines.append(f"- `{t.id}`: {t.title} (previously {status_text})")
+                lines.append("")
             
             return "\n".join(lines)
 
@@ -187,6 +238,16 @@ class RunReport(BaseModel):
                 lines.append(f"### `{t.id}`: {t.title}")
                 lines.append(f"**Description:** {t.description}")
                 lines.append(f"**Recurrence:** {t.reason}")
+                
+                if t.metadata:
+                    status_icon = {
+                        TaskStatus.COMPLETED: "✅",
+                        TaskStatus.SKIPPED: "⏭️", 
+                        TaskStatus.FAILED: "❌",
+                        TaskStatus.ATTEMPTED: "🔄",
+                        TaskStatus.PENDING: "⏸️"
+                    }.get(t.metadata.status, "❓")
+                    lines.append(f"**Status:** {status_icon} {t.metadata.status.value.title()}")
                 
                 if not t.auto_doable:
                     if t.classification:

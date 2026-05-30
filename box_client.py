@@ -5,10 +5,11 @@ import json
 import logging
 from pathlib import Path
 from typing import Any
+from datetime import datetime, timezone
 
 import requests
 
-from models import Task, StatusMentioned
+from models import Task, StatusMentioned, TaskMetadata, TaskStatus
 
 logger = logging.getLogger("ghostwriter.box")
 
@@ -156,6 +157,126 @@ class BoxClient:
             return resp2.json()["entries"][0]["id"]
         resp.raise_for_status()
         return resp.json()["entries"][0]["id"]
+
+    # ------------------------------------------------------------------ #
+    # Metadata storage and retrieval
+    # ------------------------------------------------------------------ #
+
+    def load_task_metadata(self, root_folder_id: str = "0") -> dict[str, TaskMetadata]:
+        """Load task metadata from Box storage. Returns dict of task_id -> TaskMetadata."""
+        try:
+            metadata_folder = self.ensure_folder("metadata", root_folder_id)
+            
+            # List files in metadata folder
+            resp = self._session.get(
+                f"{_BOX_API}/folders/{metadata_folder}/items",
+                params={"fields": "id,name,type", "limit": 1000},
+            )
+            resp.raise_for_status()
+            
+            metadata_dict = {}
+            for item in resp.json().get("entries", []):
+                if item["type"] == "file" and item["name"] == "task_metadata.json":
+                    # Download and parse metadata file
+                    file_resp = self._session.get(
+                        f"{_BOX_API}/files/{item['id']}/content",
+                    )
+                    file_resp.raise_for_status()
+                    metadata_data = json.loads(file_resp.text)
+                    
+                    for task_id, meta_dict in metadata_data.items():
+                        # Convert datetime string back to datetime object
+                        meta_dict["last_updated"] = datetime.fromisoformat(meta_dict["last_updated"])
+                        metadata_dict[task_id] = TaskMetadata(**meta_dict)
+                    
+                    logger.info("[metadata] Loaded metadata for %d tasks", len(metadata_dict))
+                    return metadata_dict
+                    
+            logger.info("[metadata] No existing metadata file found")
+            return {}
+            
+        except Exception as e:
+            logger.warning("[metadata] Failed to load task metadata: %s", e)
+            return {}
+
+    def save_task_metadata(self, metadata_dict: dict[str, TaskMetadata], root_folder_id: str = "0") -> None:
+        """Save task metadata to Box storage."""
+        try:
+            metadata_folder = self.ensure_folder("metadata", root_folder_id)
+            
+            # Convert metadata to JSON-serializable format
+            json_data = {}
+            for task_id, metadata in metadata_dict.items():
+                json_data[task_id] = {
+                    "task_id": metadata.task_id,
+                    "status": metadata.status.value,
+                    "last_updated": metadata.last_updated.isoformat(),
+                    "attempts": metadata.attempts,
+                    "last_error": metadata.last_error,
+                    "completed_by": metadata.completed_by,
+                    "notes": metadata.notes,
+                }
+            
+            content = json.dumps(json_data, indent=2)
+            
+            # Upload to Box
+            import io
+            resp = requests.post(
+                "https://upload.box.com/api/2.0/files/content",
+                headers={"Authorization": f"Bearer {self._token}"},
+                data={"attributes": json.dumps({"name": "task_metadata.json", "parent": {"id": metadata_folder}})},
+                files={"file": ("task_metadata.json", io.BytesIO(content.encode()), "application/json")},
+            )
+            
+            if resp.status_code == 409:
+                # File exists, update it
+                existing_id = resp.json()["context_info"]["conflicts"]["id"]
+                resp2 = requests.post(
+                    f"https://upload.box.com/api/2.0/files/{existing_id}/content",
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    data={"attributes": json.dumps({"name": "task_metadata.json"})},
+                    files={"file": ("task_metadata.json", io.BytesIO(content.encode()), "application/json")},
+                )
+                resp2.raise_for_status()
+                logger.info("[metadata] Updated task metadata for %d tasks", len(metadata_dict))
+            else:
+                resp.raise_for_status()
+                logger.info("[metadata] Saved task metadata for %d tasks", len(metadata_dict))
+                
+        except Exception as e:
+            logger.error("[metadata] Failed to save task metadata: %s", e)
+            raise
+
+    def update_task_status(self, task_id: str, status: TaskStatus, 
+                          root_folder_id: str = "0", error: str = None, 
+                          completed_by: str = None, notes: str = None) -> None:
+        """Update a single task's status in metadata."""
+        metadata_dict = self.load_task_metadata(root_folder_id)
+        
+        if task_id in metadata_dict:
+            metadata = metadata_dict[task_id]
+            metadata.status = status
+            metadata.last_updated = datetime.now(timezone.utc)
+            if status == TaskStatus.ATTEMPTED:
+                metadata.attempts += 1
+            if error:
+                metadata.last_error = error
+            if completed_by:
+                metadata.completed_by = completed_by
+            if notes:
+                metadata.notes = notes
+        else:
+            metadata_dict[task_id] = TaskMetadata(
+                task_id=task_id,
+                status=status,
+                last_updated=datetime.now(timezone.utc),
+                attempts=1 if status == TaskStatus.ATTEMPTED else 0,
+                last_error=error,
+                completed_by=completed_by,
+                notes=notes,
+            )
+        
+        self.save_task_metadata(metadata_dict, root_folder_id)
 
     # ------------------------------------------------------------------ #
     # Box AI

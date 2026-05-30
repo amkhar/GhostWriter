@@ -25,6 +25,7 @@ CLI (main.py)
        ├─ Stage 1 · Ingest      Upload transcripts to Box
        ├─ Stage 2 · Extract     Box AI extracts tasks per transcript
        ├─ Stage 3 · Recurrence  Box AI identifies tasks mentioned across multiple meetings
+       ├─ Stage 3.5 · Metadata  Load task history and filter completed/skipped tasks
        ├─ Stage 4 · Classify    Bedrock LLM decides which tasks are safe to auto-implement
        ├─ Stage 5 · Orchestrate Strands Orchestrator agent coordinates workers
        ├─ Stage 6 · Implement   Strands Worker agents make the actual code changes
@@ -32,6 +33,8 @@ CLI (main.py)
 ```
 
 `--dry-run` stops after Stage 4 — no code is ever touched.
+
+**New in v1.1**: GhostWriter now tracks task completion status in Box storage, preventing re-implementation of already completed tasks and providing metadata management capabilities.
 
 ---
 
@@ -100,6 +103,45 @@ ghostwriter run \
 cat my_standup.txt | ghostwriter run --paste --dry-run
 ```
 
+### Task metadata management
+
+```bash
+# List all tasks and their status
+ghostwriter metadata list
+
+# Mark a task as completed manually
+ghostwriter metadata complete fix-readme-typo
+
+# Mark a task as skipped (won't be attempted again)
+ghostwriter metadata skip update-legacy-code
+
+# Reset a task to pending (will be attempted again)
+ghostwriter metadata reset add-error-handling
+
+# Clear all task history
+ghostwriter metadata clear
+```
+
+---
+
+## Task Status Tracking
+
+GhostWriter maintains task status in Box storage to prevent duplicate work:
+
+| Status | Icon | Description |
+|---|---|---|
+| **Pending** | ⏸️ | Task has not been processed yet |
+| **Attempted** | 🔄 | Auto-implementation was attempted |  
+| **Completed** | ✅ | Task was successfully implemented |
+| **Skipped** | ⏭️ | Task was manually skipped |
+| **Failed** | ❌ | Auto-implementation failed |
+
+When running GhostWriter:
+- **Completed** and **skipped** tasks are excluded from auto-implementation
+- **Failed** tasks can be retried (attempts are tracked)
+- Task history is shown in dry-run reports with "Previously Handled Tasks" section
+- Interactive prompts allow marking tasks as skipped during classification
+
 ---
 
 ## Try the demo
@@ -118,9 +160,12 @@ ghostwriter run --transcripts ./sample --dry-run
 
 # Actually do it
 ghostwriter run --transcripts ./sample --repo ./sample_repo
+
+# Check task status after completion
+ghostwriter metadata list
 ```
 
-GhostWriter creates a `ghostwriter/auto-<timestamp>` branch, commits each change separately, and uploads a Markdown run report to Box.
+GhostWriter creates a `ghostwriter/auto-<timestamp>` branch, commits each change separately, updates task metadata, and uploads a Markdown run report to Box.
 
 ---
 
@@ -134,6 +179,7 @@ GhostWriter is conservative by design.
 - **Shell allowlist** — agents can only run a fixed set of commands (`pytest`, `ruff`, `eslint`, `make test`, etc.).
 - **Test-gated commits** — if the test suite fails after a change, the change is reverted before committing.
 - **Branch isolation** — all changes go to a new `ghostwriter/auto-*` branch. `main`/`master` is never touched.
+- **Status tracking** — completed tasks are never re-implemented, preventing duplicate work.
 
 ---
 
@@ -161,9 +207,10 @@ The test suite includes both unit tests and property-based tests (via [Hypothesi
 ```
 ghostwriter/
 ├── main.py              # CLI entry point (Typer)
-├── pipeline.py          # 7-stage pipeline
-├── box_client.py        # Box API layer (upload, AI Extract, AI Ask)
-├── models.py            # Pydantic data models
+├── pipeline.py          # 7-stage pipeline with metadata support
+├── box_client.py        # Box API layer (upload, AI Extract, AI Ask, metadata)
+├── models.py            # Pydantic data models (with TaskStatus/TaskMetadata)
+├── manage_metadata.py   # Standalone metadata management utility
 ├── agents/
 │   ├── orchestrator.py  # Strands Orchestrator agent
 │   ├── worker.py        # Strands Worker agent
@@ -173,6 +220,7 @@ ghostwriter/
 │   ├── test_models.py   # P7 property tests
 │   ├── test_box_client.py  # P5 property tests
 │   ├── test_pipeline.py # P3, P4 property tests
+│   ├── test_metadata.py # Metadata tracking tests
 │   └── test_cli.py      # CLI unit tests
 ├── sample/              # 3 sample standup transcripts
 ├── sample_repo/         # Sample repo for the demo
