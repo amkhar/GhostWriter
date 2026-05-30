@@ -25,10 +25,13 @@ if os.environ.get("BEDROCK_API_KEY") and not os.environ.get("AWS_BEARER_TOKEN_BE
     os.environ["AWS_BEARER_TOKEN_BEDROCK"] = os.environ["BEDROCK_API_KEY"]
 
 # Skip if real credentials aren't present
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("BEDROCK_MODEL_ID"),
-    reason="Requires BEDROCK_MODEL_ID env var (set in .env)",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not os.environ.get("BEDROCK_MODEL_ID"),
+        reason="Requires BEDROCK_MODEL_ID env var (set in .env)",
+    ),
+]
 
 
 @pytest.fixture()

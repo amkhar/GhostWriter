@@ -19,10 +19,13 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 if os.environ.get("BEDROCK_API_KEY") and not os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
     os.environ["AWS_BEARER_TOKEN_BEDROCK"] = os.environ["BEDROCK_API_KEY"]
 
-pytestmark = pytest.mark.skipif(
-    not (os.environ.get("BOX_TOKEN") and os.environ.get("BEDROCK_MODEL_ID")),
-    reason="Requires BOX_TOKEN and BEDROCK_MODEL_ID in .env",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not (os.environ.get("BOX_TOKEN") and os.environ.get("BEDROCK_MODEL_ID")),
+        reason="Requires BOX_TOKEN and BEDROCK_MODEL_ID in .env",
+    ),
+]
 
 DEMO_TRANSCRIPT_DIR = Path(__file__).parent.parent / "sample"
 SAMPLE_REPO = Path(__file__).parent.parent / "sample_repo"
