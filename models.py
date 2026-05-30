@@ -54,7 +54,7 @@ class PipelineConfig(BaseModel):
     paste_content: Optional[str] = None
     repo: Optional[Path] = None
     dry_run: bool = False
-    box_dev_token: str
+    box_dev_token: Optional[str] = None
     aws_region: str
     bedrock_model_id: str
     box_root_folder_id: str = "0"

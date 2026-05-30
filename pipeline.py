@@ -60,24 +60,44 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
     run_id = str(uuid.uuid4())[:8]
     logger.info("[GhostWriter][pipeline] Starting run %s", run_id)
 
-    box = BoxClient(config.box_dev_token)
+    # Import UI (safe to call even if not in a TTY — functions are no-ops on non-TTY)
+    try:
+        from ui import (show_stage, show_upload, show_neglected_tasks,
+                        show_classification, show_worker_start, show_worker_result,
+                        show_push, show_report_summary)
+        has_ui = True
+    except ImportError:
+        has_ui = False
+
+    box = BoxClient(
+        dev_token=os.environ.get("BOX_TOKEN_A") or config.box_dev_token,
+        client_id=os.environ.get("BOX_CLIENT_ID_A"),
+        client_secret=os.environ.get("BOX_SECRET_A"),
+    )
 
     # Stage 1: Ingest
+    if has_ui: show_stage(1, "Ingest", "Uploading transcripts to Box")
     logger.info("[GhostWriter][pipeline] Stage 1: Ingest")
     ingested = ingest(config, box)
+    if has_ui:
+        for f in ingested:
+            show_upload(f.filename, f.box_file_id)
     if not ingested:
         logger.warning("[GhostWriter][pipeline] No transcripts ingested")
 
     # Stage 2: Extract
+    if has_ui: show_stage(2, "Extract", "Box AI extracting tasks from each transcript")
     logger.info("[GhostWriter][pipeline] Stage 2: Extract")
     tasks = extract(ingested, box)
     logger.info("[GhostWriter][pipeline] Extracted %d tasks", len(tasks))
 
     # Stage 3: Recurrence detection
+    if has_ui: show_stage(3, "Recurrence", "Box AI identifying neglected recurring tasks")
     logger.info("[GhostWriter][pipeline] Stage 3: Recurrence detection")
     file_ids = [f.box_file_id for f in ingested]
     neglected = detect_recurrence(file_ids, box)
     logger.info("[GhostWriter][pipeline] Found %d neglected tasks", len(neglected))
+    if has_ui and neglected: show_neglected_tasks(neglected)
 
     if not neglected:
         logger.info("[GhostWriter][pipeline] No neglected tasks — producing empty report")
@@ -86,8 +106,12 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
         return report
 
     # Stage 4: Classify
+    if has_ui: show_stage(4, "Classify", "Bedrock LLM deciding which tasks are safe to auto-implement")
     logger.info("[GhostWriter][pipeline] Stage 4: Classify")
     neglected = classify(neglected, config.bedrock_model_id)
+    if has_ui:
+        for t in neglected:
+            show_classification(t)
 
     if config.dry_run:
         logger.info("[GhostWriter][pipeline] Dry run — stopping after classify")
@@ -96,11 +120,16 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
         return report
 
     # Stage 5-6: Orchestrate
+    if has_ui: show_stage(5, "Implement", "Strands agents making code changes")
     logger.info("[GhostWriter][pipeline] Stage 5-6: Orchestrate")
     from agents.orchestrator import orchestrate
     results, _ = orchestrate(neglected, config.repo, config.bedrock_model_id, run_id)
+    if has_ui:
+        for r in results:
+            show_worker_result(r)
 
     # Stage 7: Report
+    if has_ui: show_stage(7, "Report", "Building and uploading run report")
     logger.info("[GhostWriter][pipeline] Stage 7: Build report")
     report = build_report(neglected, results, False, run_id)
     _upload_report(report, box, config)

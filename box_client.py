@@ -23,20 +23,70 @@ _EXTRACT_PROMPT = (
 )
 
 _RECURRENCE_PROMPT = (
-    "Across all these standup transcripts, identify tasks or issues that were mentioned "
-    "in multiple meetings but were NEVER marked as done or resolved. "
+    "From these standup transcripts, identify ALL tasks, blockers, or issues that are "
+    "NOT marked as done or resolved. Include tasks mentioned even once if they appear "
+    "neglected, skipped, unassigned, blocked, or overdue. "
     "For each such task, provide: title, description, and a short reason string explaining "
-    "how many times it appeared and why it seems neglected (e.g. 'raised in 3 standups, "
-    "still unassigned'). Return a JSON array of objects with keys: "
+    "why it seems neglected (e.g. 'mentioned as blocker but unassigned', 'raised in 3 standups, "
+    "still not done'). Return a JSON array of objects with keys: "
     "title, description, reason."
 )
 
 
 class BoxClient:
-    def __init__(self, dev_token: str) -> None:
-        self._token = dev_token
+    def __init__(self, dev_token: str = None, *, client_id: str = None, client_secret: str = None) -> None:
+        """Initialize with either a developer token or CCG credentials.
+
+        CCG (Client Credentials Grant) is preferred — tokens auto-refresh.
+        Falls back to dev_token if CCG creds aren't provided.
+        """
         self._session = requests.Session()
-        self._session.headers.update({"Authorization": f"Bearer {dev_token}"})
+        self._client_id = client_id
+        self._client_secret = client_secret
+
+        if client_id and client_secret:
+            # CCG auth — try to get a fresh token
+            try:
+                self._token = self._ccg_token()
+                logger.info("[box] Using CCG authentication (auto-refresh)")
+            except Exception as e:
+                if dev_token:
+                    self._token = dev_token
+                    logger.warning("[box] CCG auth failed (%s), falling back to developer token", e)
+                else:
+                    raise
+        elif dev_token:
+            self._token = dev_token
+            logger.info("[box] Using developer token")
+        else:
+            raise ValueError("Provide either dev_token or client_id+client_secret")
+
+        self._session.headers.update({"Authorization": f"Bearer {self._token}"})
+
+    def _ccg_token(self) -> str:
+        """Obtain an access token via Client Credentials Grant."""
+        import os
+        resp = requests.post(
+            "https://api.box.com/oauth2/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+                "box_subject_type": "enterprise",
+                "box_subject_id": os.environ.get("BOX_ENTERPRISE_ID", "0"),
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()["access_token"]
+
+    def _refresh_if_needed(self, resp: requests.Response) -> bool:
+        """If 401 and we have CCG creds, refresh token and return True."""
+        if resp.status_code == 401 and self._client_id:
+            logger.info("[box] Token expired, refreshing via CCG...")
+            self._token = self._ccg_token()
+            self._session.headers.update({"Authorization": f"Bearer {self._token}"})
+            return True
+        return False
 
     # ------------------------------------------------------------------ #
     # Folder helpers

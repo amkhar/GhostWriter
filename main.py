@@ -12,9 +12,12 @@ import os
 
 from models import PipelineConfig
 
-app = typer.Typer(help="GhostWriter — AI-powered neglected-task auto-implementer")
+app = typer.Typer(
+    help="GhostWriter — AI-powered neglected-task auto-implementer",
+    no_args_is_help=True,
+)
 
-_REQUIRED_VARS = ["BOX_TOKEN", "AWS_REGION", "BEDROCK_MODEL_ID"]
+_REQUIRED_VARS = ["AWS_REGION", "BEDROCK_MODEL_ID"]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,15 +28,17 @@ logging.basicConfig(
 
 def _load_and_validate_env() -> dict[str, str]:
     load_dotenv()
-    # Translate BEDROCK_API_KEY to the boto3 bearer token env var
     bedrock_api_key = os.environ.get("BEDROCK_API_KEY")
     if bedrock_api_key and not os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
         os.environ["AWS_BEARER_TOKEN_BEDROCK"] = bedrock_api_key
     missing = [v for v in _REQUIRED_VARS if not os.environ.get(v)]
+    has_box = os.environ.get("BOX_TOKEN") or (os.environ.get("BOX_CLIENT_ID_A") and os.environ.get("BOX_SECRET_A"))
+    if not has_box:
+        missing.append("BOX_TOKEN or (BOX_CLIENT_ID_A + BOX_SECRET_A)")
     if missing:
         typer.echo(f"[GhostWriter] Missing required environment variables: {', '.join(missing)}", err=True)
         raise typer.Exit(code=1)
-    return {v: os.environ[v] for v in _REQUIRED_VARS}
+    return {v: os.environ.get(v, "") for v in _REQUIRED_VARS}
 
 
 @app.command()
@@ -44,10 +49,9 @@ def run(
     dry_run: bool = typer.Option(False, "--dry-run", help="Run stages 1-4 only; no code changes"),
     box_folder: str = typer.Option("0", "--box-folder", help="Box root folder ID (default: root)"),
 ) -> None:
-    """Run the full GhostWriter pipeline."""
+    """Run the full GhostWriter pipeline on existing transcripts."""
     env = _load_and_validate_env()
 
-    # Validate argument combinations
     if not paste and not transcripts:
         typer.echo("[GhostWriter] Error: provide --transcripts <dir> or --paste", err=True)
         raise typer.Exit(code=1)
@@ -74,11 +78,14 @@ def run(
         paste_content=paste_content,
         repo=repo,
         dry_run=dry_run,
-        box_dev_token=env["BOX_TOKEN"],
+        box_dev_token=os.environ.get("BOX_TOKEN"),
         aws_region=env["AWS_REGION"],
         bedrock_model_id=env["BEDROCK_MODEL_ID"],
         box_root_folder_id=box_folder,
     )
+
+    from ui import show_banner, show_report_summary
+    show_banner()
 
     from pipeline import run_pipeline
     try:
@@ -87,7 +94,7 @@ def run(
         typer.echo(f"[GhostWriter] Pipeline failed: {e}", err=True)
         raise typer.Exit(code=1)
 
-    # Print report to stdout
+    show_report_summary(report)
     typer.echo("\n" + report.to_markdown())
 
     if report.report_box_file_id:
@@ -95,6 +102,64 @@ def run(
     else:
         typer.echo("\n[GhostWriter] Warning: report was not uploaded to Box", err=True)
         raise typer.Exit(code=1)
+
+
+@app.command()
+def record(
+    output: Path = typer.Option("./transcripts", "--output", "-o", help="Directory to save transcript"),
+    repo: Optional[Path] = typer.Option(None, "--repo", help="Target repository (run pipeline after recording)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Classify only after recording, no code changes"),
+) -> None:
+    """Record a standup meeting from your microphone, transcribe it, then run the pipeline.
+
+    Requires DEEPGRAM_API_KEY (free at https://console.deepgram.com).
+    Records until you press Enter, then automatically runs the GhostWriter pipeline.
+    """
+    load_dotenv()
+    bedrock_api_key = os.environ.get("BEDROCK_API_KEY")
+    if bedrock_api_key and not os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
+        os.environ["AWS_BEARER_TOKEN_BEDROCK"] = bedrock_api_key
+
+    from ui import show_banner
+    show_banner()
+
+    from voice import record_meeting
+    transcript_path = record_meeting(output)
+
+    # Ask if user wants to run the pipeline
+    from rich.console import Console
+    console = Console()
+    console.print()
+
+    if not repo and not dry_run:
+        console.print("[dim]No --repo specified. Use --repo to auto-implement, or --dry-run to classify only.[/dim]")
+        return
+
+    # Run pipeline on the recorded transcript
+    missing = [v for v in _REQUIRED_VARS if not os.environ.get(v)]
+    if missing:
+        console.print(f"[red]Missing env vars for pipeline: {', '.join(missing)}[/red]")
+        raise typer.Exit(code=1)
+
+    config = PipelineConfig(
+        transcripts_dir=transcript_path.parent,
+        repo=repo,
+        dry_run=dry_run,
+        box_dev_token=os.environ.get("BOX_TOKEN"),
+        aws_region=os.environ.get("AWS_REGION", "us-east-1"),
+        bedrock_model_id=os.environ["BEDROCK_MODEL_ID"],
+    )
+
+    from pipeline import run_pipeline
+    from ui import show_report_summary
+    try:
+        report = run_pipeline(config)
+    except Exception as e:
+        console.print(f"[red]Pipeline failed: {e}[/red]")
+        raise typer.Exit(code=1)
+
+    show_report_summary(report)
+    console.print("\n" + report.to_markdown())
 
 
 if __name__ == "__main__":
