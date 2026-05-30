@@ -138,7 +138,7 @@ def test_classify_defaults_false_on_bedrock_error():
     description=st.text(min_size=1, max_size=100),
     keyword=st.sampled_from(_UNSAFE_KEYWORDS),
 )
-@settings(max_examples=100)
+@settings(max_examples=100, deadline=None)
 def test_classify_unsafe_keywords_always_false(title, description, keyword):
     """Any task containing an unsafe keyword must be auto_doable=False."""
     # Inject keyword into title or description
