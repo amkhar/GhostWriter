@@ -126,10 +126,17 @@ class BoxClient:
                 files={"file": (file_path.name, fh, "text/plain")},
             )
         if resp.status_code == 409:
-            # File already exists — return existing ID
             existing_id = resp.json()["context_info"]["conflicts"]["id"]
-            logger.info("[ingest] File already exists, reusing ID %s", existing_id)
-            return existing_id
+            logger.info("[ingest] File already exists (ID %s), deleting and reuploading", existing_id)
+            self._session.delete(f"{_BOX_API}/files/{existing_id}").raise_for_status()
+            with open(file_path, "rb") as fh:
+                resp = requests.post(
+                    "https://upload.box.com/api/2.0/files/content",
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    data={"attributes": json.dumps({"name": file_path.name, "parent": {"id": folder_id}})},
+                    files={"file": (file_path.name, fh, "text/plain")},
+                )
+            resp.raise_for_status()
         resp.raise_for_status()
         return resp.json()["entries"][0]["id"]
 
@@ -145,15 +152,15 @@ class BoxClient:
         )
         if resp.status_code == 409:
             existing_id = resp.json()["context_info"]["conflicts"]["id"]
-            # Overwrite with new version
-            resp2 = requests.post(
-                f"https://upload.box.com/api/2.0/files/{existing_id}/content",
+            logger.info("[report] File already exists (ID %s), deleting and reuploading", existing_id)
+            self._session.delete(f"{_BOX_API}/files/{existing_id}").raise_for_status()
+            resp = requests.post(
+                "https://upload.box.com/api/2.0/files/content",
                 headers={"Authorization": f"Bearer {self._token}"},
-                data={"attributes": json.dumps({"name": filename})},
+                data={"attributes": json.dumps({"name": filename, "parent": {"id": folder_id}})},
                 files={"file": (filename, io.BytesIO(content.encode()), "text/markdown")},
             )
-            resp2.raise_for_status()
-            return resp2.json()["entries"][0]["id"]
+            resp.raise_for_status()
         resp.raise_for_status()
         return resp.json()["entries"][0]["id"]
 
