@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 
 type View = 'home' | 'running' | 'detail';
 type TaskItem = { id: string; title: string; description: string; reason: string; auto_doable: boolean; auto_doable_category?: string; classification_reasoning?: string; priority?: string; evidence?: string[] };
-type AgentResult = { task_id: string; status: string; summary?: string; diff?: string; test_status?: string; title?: string; message?: string; branch?: string; error?: string };
+type AgentResult = { task_id: string; status: string; summary?: string; diff?: string; test_status?: string; title?: string; message?: string; branch?: string; error?: string; logs?: string[] };
 type StageInfo = { stage: number; name: string; status: string; message: string; stats?: any; tasks?: TaskItem[] };
 type RecStatus = { active: boolean; lines: string[]; partial: string; elapsed: number };
 type LogEntry = { time: string; source: string; msg: string; type: 'info' | 'success' | 'warning' | 'error' };
@@ -26,6 +26,8 @@ export default function Home() {
   const [expandedDiffs, setExpandedDiffs] = useState<Record<string, boolean>>({});
   const [runId, setRunId] = useState<string | null>(null);
   const [guidanceInputs, setGuidanceInputs] = useState<Record<string, string>>({});
+  const [selectedStage, setSelectedStage] = useState<number | null>(null);
+  const [stageData, setStageData] = useState<Record<number, any>>({});
 
   const pollRef = useRef<NodeJS.Timeout | null>(null);
   const terminalEndRef = useRef<HTMLDivElement | null>(null);
@@ -86,6 +88,8 @@ export default function Home() {
     setExpandedDiffs({});
     setRunId(null);
     setGuidanceInputs({});
+    setSelectedStage(null);
+    setStageData({});
 
     addLog('System', 'Initializing GhostWriter backend pipeline...', 'info');
 
@@ -124,6 +128,9 @@ export default function Home() {
         }
       }
       if (d.stats) setStats(d.stats);
+
+      // Save payload data for stage inspection
+      setStageData(prev => ({ ...prev, [d.stage]: d }));
     });
 
     es.addEventListener('agent', (e) => {
@@ -132,10 +139,12 @@ export default function Home() {
         const i = prev.findIndex(a => a.task_id === d.task_id);
         if (i >= 0) {
           const n = [...prev];
-          n[i] = { ...n[i], ...d };
+          const existingLogs = n[i].logs || [];
+          const newLogs = d.message && (existingLogs.length === 0 || existingLogs[existingLogs.length - 1] !== d.message) ? [...existingLogs, d.message] : existingLogs;
+          n[i] = { ...n[i], ...d, logs: newLogs };
           return n;
         }
-        return [...prev, d];
+        return [...prev, { ...d, logs: d.message ? [d.message] : [] }];
       });
 
       let logType: 'info' | 'success' | 'error' = 'info';
@@ -254,10 +263,12 @@ export default function Home() {
         const i = prev.findIndex(a => a.task_id === d.task_id);
         if (i >= 0) {
           const n = [...prev];
-          n[i] = { ...n[i], ...d };
+          const existingLogs = n[i].logs || [];
+          const newLogs = d.message && (existingLogs.length === 0 || existingLogs[existingLogs.length - 1] !== d.message) ? [...existingLogs, d.message] : existingLogs;
+          n[i] = { ...n[i], ...d, logs: newLogs };
           return n;
         }
-        return [...prev, d];
+        return [...prev, { ...d, logs: d.message ? [d.message] : [] }];
       });
 
       let logType: 'info' | 'success' | 'error' = 'info';
@@ -454,14 +465,21 @@ export default function Home() {
                 { s: 5, label: 'Implement', desc: 'Parallel Coding' },
                 { s: 7, label: 'Report', desc: 'Generate Report' },
               ].map((stageItem) => {
-                const stageData = stages.find(st => st.stage === stageItem.s);
-                const isCompleted = stageData?.status === 'complete' || activeStage > stageItem.s;
-                const isRunning = stageData?.status === 'running' || (pipelineActive && activeStage === stageItem.s);
-                const statusColor = isCompleted ? 'border-emerald-500/40 bg-emerald-950/20 text-emerald-400' :
+                const sItem = stages.find(st => st.stage === stageItem.s);
+                const isCompleted = sItem?.status === 'complete' || activeStage > stageItem.s;
+                const isRunning = sItem?.status === 'running' || (pipelineActive && activeStage === stageItem.s);
+                const isSelected = selectedStage === stageItem.s;
+                const statusColor = isSelected ? 'border-blue-400 bg-blue-950/40 text-blue-300 shadow-[0_0_12px_rgba(59,130,246,0.2)]' :
+                                    isCompleted ? 'border-emerald-500/40 bg-emerald-950/20 text-emerald-400 hover:border-emerald-500/60' :
                                     isRunning ? 'border-blue-500 bg-blue-950/30 text-blue-400 animate-glow-blue' :
-                                    'border-slate-800/80 bg-slate-900/40 text-slate-500';
+                                    'border-slate-800/80 bg-slate-900/40 text-slate-500 hover:border-slate-700/60';
                 return (
-                  <div key={stageItem.s} className={`p-2.5 rounded-xl border ${statusColor} transition-all duration-300 flex flex-col justify-between min-h-[64px]`}>
+                  <div
+                    key={stageItem.s}
+                    onClick={() => setSelectedStage(selectedStage === stageItem.s ? null : stageItem.s)}
+                    className={`p-2.5 rounded-xl border ${statusColor} cursor-pointer transition-all duration-200 flex flex-col justify-between min-h-[64px] group`}
+                    title="Click to inspect stage details"
+                  >
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold uppercase tracking-wider">{stageItem.label}</span>
                       {isCompleted ? (
@@ -472,11 +490,202 @@ export default function Home() {
                         <span className="w-2 h-2 bg-slate-700 rounded-full" />
                       )}
                     </div>
-                    <span className="text-[10px] text-slate-400 mt-1 truncate">{stageData?.message || stageItem.desc}</span>
+                    <span className="text-[10px] text-slate-400 mt-1 truncate">{sItem?.message || stageItem.desc}</span>
                   </div>
                 );
               })}
             </div>
+
+            {/* Real-time Stage Output Details Panel */}
+            {selectedStage && (
+              <div className="mt-4 bg-[#111827]/70 border border-slate-800/90 rounded-2xl p-5 shadow-xl relative animate-fade-in">
+                <button
+                  onClick={() => setSelectedStage(null)}
+                  className="absolute top-4 right-4 text-slate-500 hover:text-slate-300 font-mono text-[10px] hover:underline"
+                >
+                  Close Stage Info
+                </button>
+                <h3 className="text-xs font-bold text-blue-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-ping" />
+                  {
+                    {
+                      1: 'Stage 1 — Ingest (Box Transcripts Upload)',
+                      2: 'Stage 2 — Extract (Box AI Tasks Extraction)',
+                      3: 'Stage 3 — Recurrence & Apify Enrichment',
+                      4: 'Stage 4 — Classify (Bedrock Safety Classification)',
+                      5: 'Stage 5 — Implement (Sandbox Parallel Execution)',
+                      7: 'Stage 7 — Report (Generation & Box Archive)',
+                    }[selectedStage]
+                  }
+                </h3>
+
+                {/* Stage 1 Outputs */}
+                {selectedStage === 1 && (
+                  <div className="space-y-3">
+                    <p className="text-xs text-slate-400">Ingested and archived meeting transcripts uploaded to the Box cloud repository:</p>
+                    {stageData[1]?.files && stageData[1].files.length > 0 ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {stageData[1].files.map((f: any, idx: number) => (
+                          <div key={idx} className="bg-slate-950/60 border border-slate-850 rounded-xl p-3 text-xs flex justify-between items-center font-mono">
+                            <span className="text-slate-350 truncate max-w-[200px]" title={f.filename}>{f.filename}</span>
+                            <span className="text-[10px] text-slate-500">Box ID: {f.box_file_id}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-500 italic">No transcript files uploaded yet in this pipeline execution.</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Stage 2 Outputs */}
+                {selectedStage === 2 && (
+                  <div className="space-y-3">
+                    <p className="text-xs text-slate-400">Raw meeting action items extracted by Box AI before recurrence matching:</p>
+                    {stageData[2]?.tasks && stageData[2].tasks.length > 0 ? (
+                      <div className="max-h-60 overflow-y-auto space-y-2.5 pr-2">
+                        {stageData[2].tasks.map((t: any, idx: number) => (
+                          <div key={idx} className="bg-slate-950/60 border border-slate-850 rounded-xl p-3.5 space-y-1.5">
+                            <div className="flex justify-between items-start gap-2">
+                              <span className="text-xs font-bold text-slate-200">{t.title}</span>
+                              <span className="text-[9px] bg-slate-900 text-slate-500 border border-slate-800 px-2 py-0.5 rounded font-mono truncate max-w-[150px]" title={t.source_transcript}>
+                                Source: {t.source_transcript}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-400 leading-normal">{t.description}</p>
+                            {t.owner && (
+                              <div className="text-[9px] text-slate-500 font-mono">
+                                Owner mentioned: <span className="text-slate-400">{t.owner}</span>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-500 italic">No raw task definitions extracted yet.</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Stage 3 Outputs */}
+                {selectedStage === 3 && (
+                  <div className="space-y-3">
+                    <p className="text-xs text-slate-400">Recurring neglected tasks matched across transcripts and enriched with Apify public sentiment / known bug checks:</p>
+                    {stageData[3]?.tasks && stageData[3].tasks.length > 0 ? (
+                      <div className="max-h-60 overflow-y-auto space-y-2.5 pr-2">
+                        {stageData[3].tasks.map((t: any, idx: number) => (
+                          <div key={idx} className="bg-slate-950/60 border border-slate-850 rounded-xl p-3.5 space-y-2">
+                            <div className="flex justify-between items-start gap-2">
+                              <span className="text-xs font-bold text-slate-200">{t.title}</span>
+                              {t.priority && (
+                                <span className={`text-[9px] px-2 py-0.5 rounded font-bold uppercase ${
+                                  t.priority === 'high' ? 'bg-rose-500/10 text-rose-450 border border-rose-500/20 animate-pulse' : 'bg-slate-800 text-slate-400'
+                                }`}>
+                                  {t.priority} priority
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-slate-400 leading-normal">{t.description}</p>
+                            <div className="text-[10px] text-indigo-400 leading-normal bg-indigo-950/20 border border-indigo-900/15 p-2 rounded">
+                              <strong>Neglected Reason:</strong> {t.reason}
+                            </div>
+                            {t.evidence && t.evidence.length > 0 && (
+                              <div className="bg-[#0f172a]/50 border border-blue-900/20 rounded-lg p-2.5 text-[10px] text-slate-400">
+                                <span className="font-bold text-blue-400 block mb-1">Apify Evidence:</span>
+                                <ul className="list-disc pl-4 space-y-0.5">
+                                  {t.evidence.map((ev: string, i: number) => (
+                                    <li key={i}>{ev}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-500 italic">No recurring neglected tasks identified yet.</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Stage 4 Outputs */}
+                {selectedStage === 4 && (
+                  <div className="space-y-3">
+                    <p className="text-xs text-slate-400">Safety classification reasoning generated by Bedrock LLM to determine implementation path:</p>
+                    {stageData[4]?.tasks && stageData[4].tasks.length > 0 ? (
+                      <div className="max-h-60 overflow-y-auto space-y-2.5 pr-2">
+                        {stageData[4].tasks.map((t: any, idx: number) => (
+                          <div key={idx} className="bg-slate-950/60 border border-slate-850 rounded-xl p-3.5 space-y-2">
+                            <div className="flex justify-between items-start gap-2">
+                              <span className="text-xs font-bold text-slate-200">{t.title}</span>
+                              <span className={`text-[9px] px-2 py-0.5 rounded font-bold uppercase ${
+                                t.auto_doable ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                              }`}>
+                                {t.auto_doable ? 'Safe' : 'Skipped'}
+                              </span>
+                            </div>
+                            {t.classification_reasoning && (
+                              <p className="text-[11px] text-slate-350 leading-relaxed bg-slate-900/40 p-2.5 rounded border border-slate-850 font-mono italic">
+                                &gt; {t.classification_reasoning}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-500 italic">No safety classifications evaluated yet.</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Stage 5 Outputs */}
+                {selectedStage === 5 && (
+                  <div className="space-y-3">
+                    <p className="text-xs text-slate-400">Active agent coder workspace status and verification test stats:</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="bg-slate-950/60 border border-slate-850 rounded-xl p-4 space-y-1">
+                        <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono">Active Workspaces</div>
+                        <div className="text-2xl font-bold text-blue-400">{autoTasks.length}</div>
+                      </div>
+                      <div className="bg-slate-950/60 border border-slate-850 rounded-xl p-4 space-y-1">
+                        <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono">Verification Status</div>
+                        <div className="text-xs text-slate-300 font-mono">
+                          Successful: <span className="text-emerald-400 font-bold">{done.length}</span> | Failed: <span className="text-rose-400 font-bold">{failed.length}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Stage 7 Outputs */}
+                {selectedStage === 7 && (
+                  <div className="space-y-3">
+                    <p className="text-xs text-slate-400">Competitor scans and market gap integration suggestions retrieved from online search analysis:</p>
+                    {stageData[7]?.report || stageData[7]?.recommendations ? (
+                      <div className="space-y-3">
+                        {stageData[7]?.recommendations && stageData[7].recommendations.length > 0 && (
+                          <div className="bg-[#0f172a]/50 border border-blue-900/20 rounded-xl p-4 space-y-2">
+                            <span className="text-[10px] font-bold text-blue-400 uppercase tracking-wider block">Suggested Integrations (Market Gap analysis):</span>
+                            <ul className="list-disc pl-4 space-y-1.5 text-xs text-slate-300">
+                              {stageData[7].recommendations.map((rec: string, i: number) => (
+                                <li key={i}>{rec.replace(/\*\*/g, '')}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {stageData[7]?.report && (
+                          <div className="text-xs text-slate-300 bg-slate-950/60 border border-slate-850 rounded-xl p-4 max-h-44 overflow-y-auto font-mono whitespace-pre-wrap leading-relaxed">
+                            {stageData[7].report}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-500 italic">No final report summary compiled yet.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -659,7 +868,8 @@ export default function Home() {
                               </span>
                             </div>
 
-                            <p className="text-xs text-slate-400 mb-3 line-clamp-2 min-h-[32px]">{a.message || 'Initializing agent workspace...'}</p>
+                            <p className="text-xs text-slate-400 mb-1 line-clamp-2 min-h-[32px]">{a.message || 'Initializing agent workspace...'}</p>
+                            <AgentLogConsole logs={a.logs || []} />
 
                             {a.branch && (
                               <a
@@ -1169,6 +1379,8 @@ function TaskDetail({
             )}
           </div>
 
+          <AgentLogConsole logs={agent.logs || []} heightClass="h-44" />
+
           {agent.summary && (
             <div className="text-xs text-slate-300 leading-relaxed bg-slate-950/30 p-3 rounded-lg border border-slate-850">
               <strong>Summary of Changes:</strong> {agent.summary}
@@ -1313,4 +1525,31 @@ function renderDiff(diffText: string) {
       </span>
     );
   });
+}
+
+function AgentLogConsole({ logs, heightClass = "h-32" }: { logs: string[]; heightClass?: string }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    }
+  }, [logs]);
+
+  return (
+    <div
+      ref={containerRef}
+      className={`mt-2 bg-slate-950/90 border border-slate-850 rounded-lg p-2.5 ${heightClass} overflow-y-auto font-mono text-[9px] text-slate-350 space-y-1.5 scrollbar-thin shadow-inner`}
+    >
+      {logs.length === 0 ? (
+        <div className="text-slate-600 italic">Initializing agent logs...</div>
+      ) : (
+        logs.map((log, idx) => (
+          <div key={idx} className="break-all whitespace-pre-wrap leading-normal border-b border-slate-900/40 pb-0.5">
+            <span className="text-indigo-400 font-bold select-none">&gt;</span> {log}
+          </div>
+        ))
+      )}
+    </div>
+  );
 }

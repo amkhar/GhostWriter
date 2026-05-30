@@ -6,6 +6,10 @@ import sqlite3
 import json
 from pathlib import Path
 from unittest.mock import patch
+import pytest
+
+# Skip this test file if web dependencies are not installed
+pytest.importorskip("fastapi")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 

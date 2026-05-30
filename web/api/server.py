@@ -306,14 +306,16 @@ async def pipeline_run(req: PipelineRunRequest):
                 stats["api_calls"] += len(ingested)
                 stats["files_analyzed"] = len(ingested)
                 emit("stage", {"stage": 1, "name": "Ingest", "status": "complete",
-                               "message": f"Uploaded {len(ingested)} file(s)", "stats": stats.copy()})
+                               "message": f"Uploaded {len(ingested)} file(s)",
+                               "files": [f.model_dump() for f in ingested], "stats": stats.copy()})
 
                 # Stage 2: Extract
                 emit("stage", {"stage": 2, "name": "Extract", "status": "running", "message": "Box AI extracting tasks"})
                 tasks = extract(ingested, box)
                 stats["api_calls"] += len(ingested)
                 emit("stage", {"stage": 2, "name": "Extract", "status": "complete",
-                               "message": f"Extracted {len(tasks)} tasks", "stats": stats.copy()})
+                               "message": f"Extracted {len(tasks)} tasks",
+                               "tasks": [t.model_dump() for t in tasks], "stats": stats.copy()})
 
                 # Stage 3: Recurrence
                 emit("stage", {"stage": 3, "name": "Recurrence", "status": "running",
@@ -321,6 +323,10 @@ async def pipeline_run(req: PipelineRunRequest):
                 file_ids = [f.box_file_id for f in ingested]
                 neglected = detect_recurrence(file_ids, box)
                 stats["api_calls"] += 1
+                # Apify enrichment: public-evidence priority + dependency-compat checks
+                from apify_enrich import enrich
+                neglected = enrich(neglected)
+
                 emit("stage", {"stage": 3, "name": "Recurrence", "status": "complete",
                                "message": f"Found {len(neglected)} neglected tasks",
                                "tasks": [t.model_dump() for t in neglected], "stats": stats.copy()})
@@ -341,6 +347,9 @@ async def pipeline_run(req: PipelineRunRequest):
 
                 if config.dry_run:
                     report = build_report(neglected, [], True, run_id)
+                    from apify_enrich import scan_competitors
+                    recs = scan_competitors()
+                    report.recommendations = recs
                     emit("complete", {"run_id": run_id, "dry_run": True, "report": report.to_markdown(),
                                       "tasks": [t.model_dump() for t in neglected], "stats": stats})
                     # Save to DB
@@ -421,8 +430,12 @@ async def pipeline_run(req: PipelineRunRequest):
                 # Stage 7: Report
                 emit("stage", {"stage": 7, "name": "Report", "status": "running", "message": "Building report"})
                 report = build_report(neglected, results, False, run_id)
+                from apify_enrich import scan_competitors
+                recs = scan_competitors()
+                report.recommendations = recs
                 emit("stage", {"stage": 7, "name": "Report", "status": "complete",
-                               "message": "Report generated"})
+                               "message": "Report generated", "report": report.to_markdown(),
+                               "recommendations": recs})
 
                 emit("complete", {"run_id": run_id, "report": report.to_markdown(),
                                   "tasks": [t.model_dump() for t in neglected],
