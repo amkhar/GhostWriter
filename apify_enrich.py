@@ -44,10 +44,17 @@ def _run_actor(actor_id: str, run_input: dict, limit: int = 10) -> list[dict]:
 
 def _search(query: str, limit: int = 10) -> list[dict]:
     try:
-        return _run_actor(_SEARCH_ACTOR, {"queries": query, "maxPagesPerQuery": 1}, limit)
+        pages = _run_actor(
+            _SEARCH_ACTOR, {"queries": query, "maxPagesPerQuery": 1, "resultsPerPage": limit}, limit=1
+        )
     except Exception as e:  # network/actor errors must never break the pipeline
         logger.warning("[apify] search failed for %r: %s", query, e)
         return []
+    # Google Search Scraper returns page-level items with results under organicResults.
+    results: list[dict] = []
+    for p in pages:
+        results.extend(p.get("organicResults") or [])
+    return (results or pages)[:limit]
 
 
 def _titles(items: list[dict], n: int = 3) -> list[str]:
