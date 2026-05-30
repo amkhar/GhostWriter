@@ -1,31 +1,49 @@
-# GhostWriter
+<div align="center">
 
-GhostWriter is a local Python CLI tool that ingests standup/scrum meeting transcripts, uses Box AI to identify recurring neglected tasks, classifies which are safe to auto-implement using AWS Bedrock, and orchestrates multiple AI agents to implement those low-risk code changes on a working copy of your repository. It produces a Markdown run report and uploads it to Box.
+# 👻 GhostWriter
 
-## Architecture
+**AI-powered neglected-task auto-implementer**
+
+GhostWriter watches your standup transcripts, finds the tasks your team keeps mentioning but never ships, and quietly implements the safe ones — then opens a PR.
+
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
+[![Powered by Box AI](https://img.shields.io/badge/Box-AI-0061D5?logo=box&logoColor=white)](https://developer.box.com/guides/box-ai/)
+[![Powered by AWS Bedrock](https://img.shields.io/badge/AWS-Bedrock-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/bedrock/)
+
+</div>
+
+---
+
+## How it works
+
+GhostWriter runs a 7-stage pipeline:
 
 ```
 CLI (main.py)
   └─ Pipeline (pipeline.py)
-       ├─ Stage 1: Ingest — upload transcripts to Box
-       ├─ Stage 2: Extract — Box AI Extract per transcript
-       ├─ Stage 3: Recurrence — Box AI Ask multi-file
-       ├─ Stage 4: Classify — Bedrock LLM via Strands
-       ├─ Stage 5-6: Orchestrate — Strands Orchestrator + Worker agents
-       └─ Stage 7: Report — Markdown to stdout + Box upload
+       ├─ Stage 1 · Ingest      Upload transcripts to Box
+       ├─ Stage 2 · Extract     Box AI extracts tasks per transcript
+       ├─ Stage 3 · Recurrence  Box AI identifies tasks mentioned across multiple meetings
+       ├─ Stage 4 · Classify    Bedrock LLM decides which tasks are safe to auto-implement
+       ├─ Stage 5 · Orchestrate Strands Orchestrator agent coordinates workers
+       ├─ Stage 6 · Implement   Strands Worker agents make the actual code changes
+       └─ Stage 7 · Report      Markdown run report → stdout + Box upload
 ```
 
-Stages 1–4 run in `--dry-run` mode. Stages 5–6 are skipped in dry-run.
+`--dry-run` stops after Stage 4 — no code is ever touched.
 
-## Setup
+---
 
-### Prerequisites
+## Prerequisites
 
 - Python 3.11+
-- AWS credentials with Bedrock access (Claude 3.5 Sonnet recommended)
-- Box developer token (from Box Developer Console)
+- A [Box developer token](https://developer.box.com/guides/authentication/tokens/developer-tokens/) (or CCG credentials for production)
+- AWS credentials with access to Amazon Bedrock (Claude 3.5 Sonnet recommended)
 
-### Install
+---
+
+## Installation
 
 ```bash
 # Recommended: uv
@@ -33,69 +51,91 @@ pip install uv
 uv venv && source .venv/bin/activate
 uv pip install -e .
 
-# Fallback: pip
+# Or: plain pip
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-### Configure
+---
+
+## Configuration
 
 ```bash
 cp .env.example .env
-# Edit .env with your credentials
+# Fill in your credentials
 ```
 
-Required environment variables:
+| Variable | Required | Description |
+|---|---|---|
+| `BOX_TOKEN` | ✅ | Box developer token |
+| `AWS_REGION` | ✅ | AWS region (e.g. `us-east-1`) |
+| `BEDROCK_MODEL_ID` | ✅ | Bedrock model ID (e.g. `us.anthropic.claude-3-5-sonnet-20241022-v2:0`) |
+| `BOX_ROOT_FOLDER_ID` | ☑️ | Box folder to use as root (default: `"0"` = root) |
 
-| Variable | Description |
-|---|---|
-| `BOX_TOKEN` | Box developer token |
-| `AWS_REGION` | AWS region (e.g. `us-east-1`) |
-| `BEDROCK_MODEL_ID` | Bedrock model ID (e.g. `us.anthropic.claude-3-5-sonnet-20241022-v2:0`) |
+AWS credentials are resolved from the standard chain: IAM role → `~/.aws/credentials` → environment variables.
 
-AWS credentials are loaded from the standard chain (`~/.aws/credentials`, IAM role, or env vars).
+---
 
 ## Usage
 
-### Full run
+### Full run — find and implement neglected tasks
 
 ```bash
-python main.py run \
+ghostwriter run \
   --transcripts ./sample \
   --repo ./sample_repo
 ```
 
-### Dry run (stages 1–4 only, no code changes)
+### Dry run — classify only, no code changes
 
 ```bash
-python main.py run \
+ghostwriter run \
   --transcripts ./sample \
   --dry-run
 ```
 
-### Paste transcript from stdin
+### Pipe a transcript from stdin
 
 ```bash
-cat my_standup.txt | python main.py run --paste --dry-run
+cat my_standup.txt | ghostwriter run --paste --dry-run
 ```
 
-## Demo with sample data
+---
 
-The `sample/` directory contains 3 standup transcripts referencing the same 3 recurring tasks:
+## Try the demo
 
-1. **Update README** — replace `run.sh` with `make run` (3 standups, unassigned)
-2. **Add null check** — `parse_user` email field (3 standups, unassigned)
-3. **Add session expiry log line** — missing `logger.info` in `session.py` (3 standups, unassigned)
+The `sample/` directory has 3 standup transcripts that reference the same 3 recurring tasks. The `sample_repo/` directory has the corresponding code with those issues present.
 
-The `sample_repo/` directory contains the corresponding code files with these issues present.
+| Task | What GhostWriter does |
+|---|---|
+| Update README — replace `run.sh` with `make run` | Edits `README.md` |
+| Add null check on `parse_user` email field | Edits `user.py` |
+| Add session expiry log line in `session.py` | Edits `session.py` |
 
 ```bash
-# Dry run to see what would be done
-python main.py run --transcripts ./sample --dry-run
+# See what would be done
+ghostwriter run --transcripts ./sample --dry-run
 
-# Full run to auto-implement
-python main.py run --transcripts ./sample --repo ./sample_repo
+# Actually do it
+ghostwriter run --transcripts ./sample --repo ./sample_repo
 ```
+
+GhostWriter creates a `ghostwriter/auto-<timestamp>` branch, commits each change separately, and uploads a Markdown run report to Box.
+
+---
+
+## Safety model
+
+GhostWriter is conservative by design.
+
+- **Allowlist-only auto-implementation** — only tasks that match safe categories (fix typo, update docs, add null check, add log line, bump dependency, add unit test, rename for consistency) are ever attempted.
+- **Unsafe keyword fast-path** — tasks mentioning `auth`, `payment`, `database migration`, `delete`, `drop table`, etc. are immediately marked non-auto-doable.
+- **Write path confinement** — worker agents can only read/write files inside the working copy. Any path traversal attempt raises a `SecurityError`.
+- **Shell allowlist** — agents can only run a fixed set of commands (`pytest`, `ruff`, `eslint`, `make test`, etc.).
+- **Test-gated commits** — if the test suite fails after a change, the change is reverted before committing.
+- **Branch isolation** — all changes go to a new `ghostwriter/auto-*` branch. `main`/`master` is never touched.
+
+---
 
 ## Testing
 
@@ -103,60 +143,64 @@ python main.py run --transcripts ./sample --repo ./sample_repo
 pytest
 ```
 
-Tests cover:
-- **P1** Write path confinement (property-based, 100 examples)
-- **P2** Shell allowlist enforcement (property-based, 200 examples)
-- **P3** Classification conservatism for unsafe keywords (property-based)
-- **P4** Dry-run produces no working copy
-- **P5** Task extraction schema completeness (property-based, 200 examples)
-- **P7** Report completeness (property-based, 100 examples)
-- Unit tests for all pipeline stages, CLI validation, Box client
+The test suite includes both unit tests and property-based tests (via [Hypothesis](https://hypothesis.readthedocs.io/)):
 
-## Assumptions
+| Property | What it verifies |
+|---|---|
+| P1 · Write path confinement | Worker can never write outside the working copy (100 examples) |
+| P2 · Shell allowlist | Non-allowlisted commands are always rejected (200 examples) |
+| P3 · Classification conservatism | Tasks with unsafe keywords are never marked auto-doable |
+| P4 · Dry-run isolation | Dry run never produces a working copy |
+| P5 · Task extraction schema | Box AI responses always produce valid Task objects (200 examples) |
+| P7 · Report completeness | Run reports always include all neglected tasks |
 
-1. **Box authentication**: Uses a developer token (`BOX_TOKEN`). Developer tokens expire after 60 minutes. For production, upgrade to Client Credentials Grant (CCG) — see the CCG upgrade path below.
-2. **Bedrock model**: Any model supporting tool use works. Claude 3.5 Sonnet is recommended for best classification accuracy.
-3. **Repository**: The `--repo` directory must be a git repository. GhostWriter creates a `ghostwriter/auto-<timestamp>` branch and never touches `main`/`master`.
-4. **Working copy**: Created in `/tmp/ghostwriter-<run_id>/`. Cleaned up manually if needed.
-5. **Box folder structure**: GhostWriter creates `transcripts/`, `tasks/`, and `reports/` folders under the root folder (default: Box root `"0"`).
+---
 
-## CCG Upgrade Path (Box Authentication)
+## Project structure
 
-For production use, replace the developer token with Client Credentials Grant:
+```
+ghostwriter/
+├── main.py              # CLI entry point (Typer)
+├── pipeline.py          # 7-stage pipeline
+├── box_client.py        # Box API layer (upload, AI Extract, AI Ask)
+├── models.py            # Pydantic data models
+├── agents/
+│   ├── orchestrator.py  # Strands Orchestrator agent
+│   ├── worker.py        # Strands Worker agent
+│   └── tools.py         # Sandboxed filesystem + shell tools
+├── tests/
+│   ├── test_tools.py    # P1, P2 property tests
+│   ├── test_models.py   # P7 property tests
+│   ├── test_box_client.py  # P5 property tests
+│   ├── test_pipeline.py # P3, P4 property tests
+│   └── test_cli.py      # CLI unit tests
+├── sample/              # 3 sample standup transcripts
+├── sample_repo/         # Sample repo for the demo
+├── .env.example         # Environment variable template
+└── pyproject.toml       # Package config + dependencies
+```
 
-1. In Box Developer Console, create a CCG app and note `client_id` and `client_secret`.
+---
+
+## Production: upgrading Box authentication
+
+Developer tokens expire after 60 minutes. For production, switch to [Client Credentials Grant (CCG)](https://developer.box.com/guides/authentication/client-credentials/):
+
+1. Create a CCG app in the Box Developer Console and note your `client_id` and `client_secret`.
 2. Add to `.env`:
    ```
    BOX_CLIENT_ID=your_client_id
    BOX_CLIENT_SECRET=your_client_secret
    ```
-3. In `box_client.py`, replace the `requests.Session` auth header with:
+3. In `box_client.py`, replace the `requests.Session` auth header:
    ```python
    from boxsdk import CCGAuth, Client
    auth = CCGAuth(client_id=..., client_secret=..., enterprise_id=...)
    client = Client(auth)
    ```
 
-## Project Structure
+---
 
-```
-GhostWriter/
-├── main.py              # CLI entry point (typer)
-├── pipeline.py          # Pipeline stage functions
-├── box_client.py        # Box API layer
-├── models.py            # Pydantic data models
-├── agents/
-│   ├── orchestrator.py  # Strands Orchestrator agent
-│   ├── worker.py        # Strands Worker agent
-│   └── tools.py         # Filesystem + shell tools
-├── tests/
-│   ├── test_tools.py    # P1, P2 property tests
-│   ├── test_models.py   # P7 property tests
-│   ├── test_box_client.py # P5 property tests
-│   ├── test_pipeline.py # P3, P4 property tests
-│   └── test_cli.py      # CLI unit tests
-├── sample/              # 3 sample standup transcripts
-├── sample_repo/         # Sample code repo for demo
-├── .env.example         # Environment variable template
-└── pyproject.toml       # Package config + dependencies
-```
+## License
+
+[Apache 2.0](LICENSE)

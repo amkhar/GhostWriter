@@ -1,0 +1,10 @@
+Standup Meeting — 2024-01-08
+
+Dave: Yesterday I was looking at the session module. The get_session() function removes expired sessions but there's no log line when that happens. We should add logger.info("Session expired for user %s", user_id) in the expiry path. It's a one-liner.
+
+Dave: Same thing today — still not done. Nobody picked it up.
+
+Dave: Third standup. The session expiry log line is still missing. It's unassigned and blocking our observability work.
+
+Action items:
+- [ ] Anyone: Add session expiry log line to get_session() in session.py (3rd time on backlog, unassigned)
