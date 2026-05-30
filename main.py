@@ -46,14 +46,21 @@ def run(
     transcripts: Optional[Path] = typer.Option(None, "--transcripts", help="Directory of .txt/.md transcript files"),
     repo: Optional[Path] = typer.Option(None, "--repo", help="Target repository directory"),
     paste: bool = typer.Option(False, "--paste", help="Read transcript from stdin"),
+    granola: bool = typer.Option(False, "--granola", help="Import transcripts from Granola"),
+    granola_limit: int = typer.Option(20, "--granola-limit", help="Max number of Granola transcripts to fetch"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Run stages 1-4 only; no code changes"),
     box_folder: str = typer.Option("0", "--box-folder", help="Box root folder ID (default: root)"),
 ) -> None:
     """Run the full GhostWriter pipeline on existing transcripts."""
     env = _load_and_validate_env()
 
+    if granola:
+        from granola_client import fetch_granola_transcripts
+        typer.echo("[GhostWriter] Fetching transcripts from Granola...")
+        transcripts = fetch_granola_transcripts(Path("./transcripts/granola"), limit=granola_limit)
+
     if not paste and not transcripts:
-        typer.echo("[GhostWriter] Error: provide --transcripts <dir> or --paste", err=True)
+        typer.echo("[GhostWriter] Error: provide --transcripts <dir>, --paste, or --granola", err=True)
         raise typer.Exit(code=1)
 
     if transcripts and not transcripts.is_dir():
