@@ -13,7 +13,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from models import PipelineConfig
-from ui_service import run_dry_run, DRY_RUN_STAGES
+from ui_service import run_dry_run, run_full, DRY_RUN_STAGES, FULL_RUN_STAGES
 
 load_dotenv()
 # Match the CLI: map a Bedrock API key to the boto3 bearer-token env var.
@@ -22,7 +22,7 @@ if os.environ.get("BEDROCK_API_KEY") and not os.environ.get("AWS_BEARER_TOKEN_BE
 
 st.set_page_config(page_title="GhostWriter", page_icon="👻", layout="wide")
 st.title("👻 GhostWriter")
-st.caption("Find recurring neglected tasks in standup transcripts (Dry Run — no code is changed).")
+st.caption("Find recurring neglected tasks in standup transcripts, and optionally auto-implement the safe ones.")
 
 box_token = os.environ.get("BOX_TOKEN", "")
 region = os.environ.get("AWS_REGION", "us-east-1")
@@ -35,6 +35,12 @@ with st.sidebar:
     st.write("Bedrock model:", model_id or "❌ missing")
     box_folder = st.text_input("Box root folder ID", value="0")
     st.caption("Values are read from `.env`; secrets are never displayed.")
+    st.divider()
+    mode = st.radio("Mode", ["Dry Run", "Full Run"], help="Full Run lets agents implement safe tasks on a copy of the repo.")
+    repo_path = ""
+    if mode == "Full Run":
+        repo_path = st.text_input("Target repo path", help="A git repo. Changes go to a new ghostwriter/auto-* branch.")
+        st.info("Full Run copies the repo, works on a `ghostwriter/auto-*` branch, and never touches `main`.")
 
 st.subheader("Transcripts")
 tab_upload, tab_paste = st.tabs(["Upload files", "Paste text"])
@@ -45,12 +51,16 @@ with tab_upload:
 with tab_paste:
     pasted = st.text_area("Paste a single transcript", height=200)
 
-if st.button("Run dry run", type="primary"):
+full = mode == "Full Run"
+if st.button("Run full" if full else "Run dry run", type="primary"):
     if not (box_token and model_id):
         st.error("Box token and Bedrock model ID are required — set them in `.env`.")
         st.stop()
     if not uploaded and not pasted.strip():
         st.error("Provide at least one transcript (upload a file or paste text).")
+        st.stop()
+    if full and not (repo_path and Path(repo_path).is_dir()):
+        st.error("Full Run requires a valid target repo path.")
         st.stop()
 
     transcripts_dir = None
@@ -66,8 +76,8 @@ if st.button("Run dry run", type="primary"):
     config = PipelineConfig(
         transcripts_dir=transcripts_dir,
         paste_content=paste_content,
-        repo=None,
-        dry_run=True,
+        repo=Path(repo_path) if full else None,
+        dry_run=not full,
         box_dev_token=box_token,
         aws_region=region,
         bedrock_model_id=model_id,
@@ -75,8 +85,9 @@ if st.button("Run dry run", type="primary"):
     )
 
     st.subheader("Pipeline")
-    slots = {s: st.empty() for s in DRY_RUN_STAGES}
-    for s in DRY_RUN_STAGES:
+    stages = FULL_RUN_STAGES if full else DRY_RUN_STAGES
+    slots = {s: st.empty() for s in stages}
+    for s in stages:
         slots[s].markdown(f"⏳ {s}")
     icons = {"running": "🔄", "done": "✅", "skipped": "⏭️"}
 
@@ -84,7 +95,7 @@ if st.button("Run dry run", type="primary"):
         slots[stage].markdown(f"{icons.get(status, '•')} {stage}")
 
     try:
-        report = run_dry_run(config, progress)
+        report = (run_full if full else run_dry_run)(config, progress)
     except Exception as e:
         st.error(f"Run failed: {e}")
         st.stop()
@@ -105,6 +116,17 @@ if st.button("Run dry run", type="primary"):
         )
     else:
         st.info("No recurring neglected tasks detected.")
+
+    if report.worker_results:
+        st.subheader("Auto-implemented changes")
+        for r in report.worker_results:
+            header = f"{'✅' if r.success else '❌'} {r.task_id} · tests: {r.test_status or 'n/a'}"
+            with st.expander(header, expanded=r.success):
+                st.write(r.summary)
+                if r.diff:
+                    st.code(r.diff, language="diff")
+                if r.error:
+                    st.error(r.error)
 
     st.subheader("Run report")
     md = report.to_markdown()
