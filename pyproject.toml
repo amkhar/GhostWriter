@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "ghostwriter"
 version = "0.1.0"
-description = "AI-powered neglected-task auto-implementer using Box AI and AWS Bedrock"
+description = "Turn standups into shipped code using Box AI and AWS Bedrock"
 requires-python = ">=3.11"
 dependencies = [
     "typer>=0.12",
