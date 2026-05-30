@@ -466,11 +466,18 @@ def build_report(
 
 
 def _upload_report(report: RunReport, box: BoxClient, config: PipelineConfig) -> None:
-    try:
-        folder_id = box.ensure_folder("reports", config.box_root_folder_id)
-        fid = box.upload_report(report.to_markdown(), folder_id, f"ghostwriter_report_{report.run_id}.md")
-        report.report_box_file_id = fid
-        logger.info("[GhostWriter][report] Uploaded report to Box: %s", fid)
-    except Exception as e:
-        logger.error("[GhostWriter][report] Box upload failed: %s", e)
-        raise
+    import time
+    for attempt in range(3):
+        try:
+            folder_id = box.ensure_folder("reports", config.box_root_folder_id)
+            fid = box.upload_report(report.to_markdown(), folder_id, f"ghostwriter_report_{report.run_id}.md")
+            report.report_box_file_id = fid
+            logger.info("[GhostWriter][report] Uploaded report to Box: %s", fid)
+            return
+        except Exception as e:
+            if attempt < 2:
+                logger.warning("[GhostWriter][report] Upload failed (attempt %d), retrying: %s", attempt + 1, e)
+                time.sleep(2 ** attempt)
+            else:
+                logger.error("[GhostWriter][report] Box upload failed after 3 attempts: %s", e)
+                raise
