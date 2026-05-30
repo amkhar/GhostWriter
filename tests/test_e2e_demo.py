@@ -36,8 +36,11 @@ def fresh_repo(tmp_path):
     """Copy sample_repo to a temp dir with a clean git state."""
     repo = tmp_path / "repo"
     shutil.copytree(str(SAMPLE_REPO), str(repo))
+    subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
     subprocess.run(["git", "config", "user.email", "test@ghostwriter"], cwd=str(repo), check=True)
     subprocess.run(["git", "config", "user.name", "GhostWriter Test"], cwd=str(repo), check=True)
+    subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=str(repo), check=True)
     return repo
 
 

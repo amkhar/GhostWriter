@@ -139,11 +139,17 @@ GhostWriter is conservative by design.
 
 ## Testing
 
+Tests are split into **unit** tests (fast, fully mocked — no credentials or network) and **integration** tests (real Box + Bedrock + git + agent flow). Integration tests are marked `integration` and deselected by default.
+
 ```bash
+# Unit tests only (default)
 pytest
+
+# Integration tests (requires BOX_TOKEN + BEDROCK_MODEL_ID in .env, plus sample_repo/)
+pytest -m integration -v -s
 ```
 
-The test suite includes both unit tests and property-based tests (via [Hypothesis](https://hypothesis.readthedocs.io/)):
+The unit suite includes both example-based and property-based tests (via [Hypothesis](https://hypothesis.readthedocs.io/)):
 
 | Property | What it verifies |
 |---|---|
