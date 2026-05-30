@@ -86,12 +86,15 @@ def orchestrate(
     )
 
     # Build task list prompt
-    task_lines = "\n".join(
-        f"- task_id={t.id}: {t.title} — {t.description}" for t in auto_tasks
-    )
+    task_lines = []
+    for t in auto_tasks:
+        line = f"- task_id={t.id}: {t.title} — {t.description}"
+        if t.user_guidance:
+            line += f"\n  USER GUIDANCE: {t.user_guidance}"
+        task_lines.append(line)
     prompt = (
         f"Repository is at: {working_copy}\n\n"
-        f"Auto-doable tasks to implement:\n{task_lines}\n\n"
+        f"Auto-doable tasks to implement:\n" + "\n".join(task_lines) + "\n\n"
         "For each task, call run_worker_agent. Report when all tasks are done."
     )
 

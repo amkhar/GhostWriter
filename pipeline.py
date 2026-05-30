@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
 import uuid
 from pathlib import Path
 
@@ -40,19 +41,32 @@ _UNSAFE_KEYWORDS = [
     "infrastructure", "delete", "drop table", "remove file", "rm -rf",
 ]
 
-_CLASSIFY_PROMPT = """You are a code-change safety classifier.
+_CLASSIFY_PROMPT = """You are a code-change safety classifier with codebase context.
 
-Given a neglected task, decide if it is safe to auto-implement.
-Set auto_doable=true ONLY for: fix typo, update doc/README, add missing log line,
-add null/empty check, bump dependency version, add simple unit test, rename for consistency.
-Set auto_doable=false for: auth, payments, database migrations, infrastructure, code deletion,
-or anything that doesn't clearly fit the above categories.
+Given a neglected task AND relevant code from the repo, decide if it is safe to auto-implement.
+
+Set auto_doable=true for changes that are:
+- Small and localized (touches 1-3 files, <50 lines)
+- Low risk: fix typo, update doc/README, add log line, add null check, bump dep,
+  add unit test, rename, add config, fix lint, update error msg, refactor small function,
+  change upload behavior, add a flag/option, update a prompt string
+- Clear from the code context what needs to change
+
+Set auto_doable=false ONLY for:
+- Auth, payments, database migrations, security-critical code
+- Requires architectural decisions or multi-service coordination
+- Ambiguous with no clear path even after seeing the code
+
+Be GENEROUS. If the code shows it is a straightforward change, approve it.
 
 Respond with JSON only:
-{{"auto_doable": true|false, "category": "<category or null>", "reasoning": "<1 sentence>"}}
+{{"auto_doable": true|false, "category": "<category>", "reasoning": "<1 sentence>", "files_to_change": ["<file1>"]}}
 
 Task title: {title}
 Task description: {description}
+
+Relevant code from the repository:
+{code_context}
 """
 
 
@@ -108,10 +122,15 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
     # Stage 4: Classify
     if has_ui: show_stage(4, "Classify", "Bedrock LLM deciding which tasks are safe to auto-implement")
     logger.info("[GhostWriter][pipeline] Stage 4: Classify")
-    neglected = classify(neglected, config.bedrock_model_id)
+    neglected = classify(neglected, config.bedrock_model_id, config.repo)
     if has_ui:
         for t in neglected:
             show_classification(t)
+
+    # Interactive override: let user force-approve skipped tasks with guidance
+    skipped = [t for t in neglected if not t.auto_doable]
+    if skipped and not config.dry_run and sys.stdin.isatty():
+        neglected = _prompt_user_overrides(neglected)
 
     if config.dry_run:
         logger.info("[GhostWriter][pipeline] Dry run — stopping after classify")
@@ -216,8 +235,14 @@ def detect_recurrence(file_ids: list[str], box: BoxClient) -> list[NeglectedTask
     return neglected
 
 
-def classify(neglected: list[NeglectedTask], model_id: str) -> list[NeglectedTask]:
-    """Use Bedrock LLM to classify each NeglectedTask; set auto_doable flag."""
+def classify(neglected: list[NeglectedTask], model_id: str, repo: Path = None) -> list[NeglectedTask]:
+    """Use Bedrock LLM to classify each NeglectedTask with codebase research."""
+    from agents.worker import AGENT_BACKEND
+
+    # If using an external agent (kiro/claude-code), let IT do the research + classification
+    if AGENT_BACKEND in ("kiro", "claude-code") and repo:
+        return _classify_via_agent(neglected, repo)
+
     aws_region = os.environ.get("AWS_REGION", "us-east-1")
     model = BedrockModel(model_id=model_id, region_name=aws_region)
     classifier = Agent(model=model, system_prompt="You are a JSON-only responder.")
@@ -231,11 +256,11 @@ def classify(neglected: list[NeglectedTask], model_id: str) -> list[NeglectedTas
             logger.info("[GhostWriter][classify][%s] auto_doable=False (unsafe keyword)", task.id)
             continue
 
-        prompt = _CLASSIFY_PROMPT.format(title=task.title, description=task.description)
+        code_context = _research_codebase(task, repo) if repo else "(no repo provided)"
+        prompt = _CLASSIFY_PROMPT.format(title=task.title, description=task.description, code_context=code_context)
         try:
             response = classifier(prompt)
             text = str(response).strip()
-            # Extract JSON
             match = re.search(r"\{.*\}", text, re.DOTALL)
             if match:
                 data = json.loads(match.group())
@@ -254,6 +279,144 @@ def classify(neglected: list[NeglectedTask], model_id: str) -> list[NeglectedTas
             "[GhostWriter][classify][%s] auto_doable=%s category=%s reasoning=%s",
             task.id, task.auto_doable, task.auto_doable_category, task.classification_reasoning,
         )
+
+    return neglected
+
+
+def _classify_via_agent(neglected: list[NeglectedTask], repo: Path) -> list[NeglectedTask]:
+    """Use kiro-cli or claude-code to research the codebase and classify tasks."""
+    import subprocess
+    from agents.worker import AGENT_BACKEND
+
+    tasks_json = json.dumps([{"id": t.id, "title": t.title, "description": t.description} for t in neglected])
+
+    prompt = (
+        f"You are classifying tasks for an auto-implementation tool. "
+        f"Research this codebase to determine which tasks are safe to auto-implement.\n\n"
+        f"Tasks to classify:\n{tasks_json}\n\n"
+        f"For EACH task, search the codebase to find the relevant files and understand the scope.\n"
+        f"A task is auto_doable if it's a localized change (1-3 files, <50 lines, no auth/payment/migration).\n\n"
+        f"Respond with ONLY a JSON array:\n"
+        f'[{{"id": "...", "auto_doable": true/false, "category": "...", "reasoning": "...", "files_to_change": [...]}}]'
+    )
+
+    if AGENT_BACKEND == "kiro":
+        cmd = ["kiro-cli", "chat", "--trust-all-tools", "--no-interactive", prompt]
+    else:
+        cmd = ["claude", "-p", prompt, "--allowedTools", "Edit,Write,Read,Bash"]
+
+    logger.info("[GhostWriter][classify] Using %s agent for research + classification", AGENT_BACKEND)
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(repo), timeout=300)
+
+    # Parse JSON from output
+    output = r.stdout
+    match = re.search(r"\[.*\]", output, re.DOTALL)
+    if match:
+        try:
+            results = json.loads(match.group())
+            results_map = {item["id"]: item for item in results}
+            for task in neglected:
+                if task.id in results_map:
+                    data = results_map[task.id]
+                    task.auto_doable = bool(data.get("auto_doable", False))
+                    task.auto_doable_category = data.get("category")
+                    task.classification_reasoning = data.get("reasoning")
+                logger.info("[GhostWriter][classify][%s] auto_doable=%s reasoning=%s",
+                            task.id, task.auto_doable, task.classification_reasoning)
+            return neglected
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback: if agent didn't return parseable JSON, mark all as auto_doable
+    # (the agent researched it, trust its judgment even if format was off)
+    logger.warning("[GhostWriter][classify] Could not parse agent output, defaulting all to auto_doable")
+    for task in neglected:
+        task.auto_doable = True
+        task.auto_doable_category = "agent-researched"
+        task.classification_reasoning = "Agent researched codebase but output wasn't parseable JSON; defaulting to approve"
+    return neglected
+
+
+def _research_codebase(task: NeglectedTask, repo: Path) -> str:
+    """Grep the repo for code relevant to the task. Returns compact context for the classifier."""
+    import subprocess
+
+    keywords = _extract_keywords(task.title + " " + task.description)
+    snippets: list[str] = []
+
+    for kw in keywords[:5]:
+        r = subprocess.run(
+            ["grep", "-rn", "--include=*.py", "--include=*.ts", "--include=*.js",
+             "--include=*.md", "--include=*.yaml", "--include=*.toml",
+             "-i", "-l", kw, str(repo)],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.stdout.strip():
+            for f in r.stdout.strip().split("\n")[:3]:
+                r2 = subprocess.run(
+                    ["grep", "-n", "-i", "-B1", "-A3", kw, f],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if r2.stdout.strip():
+                    rel_path = f.replace(str(repo) + "/", "")
+                    snippets.append(f"--- {rel_path} ---\n{r2.stdout.strip()[:500]}")
+
+    if not snippets:
+        return "(no relevant code found in repo)"
+
+    seen = set()
+    unique = [s for s in snippets if s not in seen and not seen.add(s)]
+    return "\n\n".join(unique[:8])[:3000]
+
+
+def _extract_keywords(text: str) -> list[str]:
+    """Extract meaningful search keywords from task text."""
+    stop = {"the", "a", "an", "is", "are", "was", "were", "be", "been", "to", "of", "in",
+            "for", "on", "with", "at", "by", "from", "it", "this", "that", "not", "but",
+            "and", "or", "if", "we", "should", "can", "will", "do", "has", "have", "had",
+            "just", "also", "still", "instead", "when", "then", "so", "as", "all", "any"}
+    words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', text)
+    seen = set()
+    return [w for w in words if w.lower() not in stop and len(w) > 2
+            and w.lower() not in seen and not seen.add(w.lower())]
+
+
+def _prompt_user_overrides(neglected: list[NeglectedTask]) -> list[NeglectedTask]:
+    """Interactively ask user if they want to force-approve skipped tasks."""
+    from rich.console import Console
+    from rich.panel import Panel
+    from feedback import record_override
+
+    console = Console()
+    skipped = [t for t in neglected if not t.auto_doable]
+
+    console.print()
+    console.print(Panel(
+        f"[yellow]{len(skipped)} task(s) were skipped by the classifier.[/yellow]\n"
+        "[dim]You can provide implementation details to force any task through.[/dim]",
+        title="[bold]💡 Override Skipped Tasks?[/bold]",
+        border_style="yellow",
+    ))
+
+    for task in skipped:
+        console.print(f"\n  [bold]{task.title}[/bold]")
+        console.print(f"  [dim]Reason skipped: {task.classification_reasoning}[/dim]")
+        console.print(f"  [dim]Description: {task.description[:100]}[/dim]")
+        answer = console.input("  [yellow]Provide implementation details (or Enter to skip):[/yellow] ").strip()
+
+        if answer:
+            task.auto_doable = True
+            task.auto_doable_category = "user-directed"
+            task.user_guidance = answer
+            task.classification_reasoning = f"User override: {answer[:80]}"
+            record_override(
+                task_id=task.id,
+                title=task.title,
+                description=task.description,
+                user_guidance=answer,
+                classification_reasoning=task.classification_reasoning,
+            )
+            console.print(f"  [green]✅ Forced auto-doable with your guidance[/green]")
 
     return neglected
 

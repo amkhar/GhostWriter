@@ -33,6 +33,7 @@ class NeglectedTask(BaseModel):
     auto_doable: bool = False
     auto_doable_category: Optional[str] = None
     classification_reasoning: Optional[str] = None
+    user_guidance: Optional[str] = None  # user-provided implementation details (skips classification)
 
 
 class WorkerResult(BaseModel):

@@ -62,3 +62,5 @@ logs/
 # Distribution
 *.tar.gz
 *.zip
+
+.ghostwriter_feedback.jsonl

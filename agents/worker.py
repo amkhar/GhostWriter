@@ -112,17 +112,16 @@ def _run_strands_agent(task_id: str, task_description: str, working_copy: Path, 
 def _run_kiro_agent(task_id: str, task_description: str, working_copy: Path) -> str:
     """Use kiro-cli as the coding agent (local, powerful, tool-use enabled)."""
     prompt = (
-        f"In the repo at {working_copy}, implement this task:\n\n"
+        f"In this repo, implement this task:\n\n"
         f"{task_description}\n\n"
         f"Make the minimal change needed. Do not modify unrelated files."
     )
     r = subprocess.run(
-        ["kiro-cli", "chat", "--trust-all-tools", "-p", prompt],
+        ["kiro-cli", "chat", "--trust-all-tools", "--no-interactive", prompt],
         capture_output=True, text=True, cwd=str(working_copy), timeout=300,
     )
     if r.returncode != 0:
         raise RuntimeError(f"kiro-cli failed: {r.stderr[:500]}")
-    # Last line is typically the summary
     lines = r.stdout.strip().splitlines()
     return lines[-1] if lines else "Completed via kiro-cli"
 
