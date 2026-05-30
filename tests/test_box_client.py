@@ -93,15 +93,23 @@ def test_upload_transcript_success(tmp_path, client):
     assert fid == "file123"
 
 
-def test_upload_transcript_conflict_returns_existing(tmp_path, client):
+def test_upload_transcript_conflict_deletes_and_reuploads(tmp_path, client):
     f = tmp_path / "test.txt"
     f.write_text("hello")
-    mock_resp = MagicMock()
-    mock_resp.status_code = 409
-    mock_resp.json.return_value = {"context_info": {"conflicts": {"id": "existing123"}}}
-    with patch("requests.post", return_value=mock_resp):
+    conflict_resp = MagicMock()
+    conflict_resp.status_code = 409
+    conflict_resp.json.return_value = {"context_info": {"conflicts": {"id": "existing123"}}}
+    success_resp = MagicMock()
+    success_resp.status_code = 201
+    success_resp.raise_for_status = MagicMock()
+    success_resp.json.return_value = {"entries": [{"id": "new456"}]}
+    delete_resp = MagicMock()
+    delete_resp.raise_for_status = MagicMock()
+    client._session.delete = MagicMock(return_value=delete_resp)
+    with patch("requests.post", side_effect=[conflict_resp, success_resp]):
         fid = client.upload_transcript(f, "folder1")
-    assert fid == "existing123"
+    assert fid == "new456"
+    client._session.delete.assert_called_once()
 
 
 def test_ai_extract_returns_list(client):
