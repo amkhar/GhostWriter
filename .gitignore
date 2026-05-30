@@ -63,4 +63,19 @@ logs/
 *.tar.gz
 *.zip
 
+# GhostWriter data
 .ghostwriter_feedback.jsonl
+transcripts/
+
+# Web UI - Frontend
+web/frontend/node_modules/
+web/frontend/.next/
+web/frontend/out/
+
+# Web UI - Backend
+web/ghostwriter.db
+web/__pycache__/
+web/api/__pycache__/
+
+# Sample repo (has its own git)
+sample_repo/.git/

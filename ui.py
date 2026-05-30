@@ -18,7 +18,7 @@ def show_banner():
     console.print()
     console.print(Panel(
         "[bold white]👻 GhostWriter[/bold white]\n"
-        "[dim]AI-powered neglected-task auto-implementer[/dim]",
+        "[dim]Turn standups into shipped code[/dim]",
         border_style="bright_magenta",
         width=60,
     ))

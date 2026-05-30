@@ -13,7 +13,7 @@ import os
 from models import PipelineConfig
 
 app = typer.Typer(
-    help="GhostWriter — AI-powered neglected-task auto-implementer",
+    help="GhostWriter — Turn standups into shipped code",
     no_args_is_help=True,
 )
 

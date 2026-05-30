@@ -131,31 +131,61 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
         for t in neglected:
             show_classification(t)
 
-    # Interactive override: let user force-approve skipped tasks with guidance
-    skipped = [t for t in neglected if not t.auto_doable]
-    if skipped and not config.dry_run and sys.stdin.isatty():
-        neglected = _prompt_user_overrides(neglected)
-
     if config.dry_run:
+        # Interactive override still available in dry-run for planning
+        skipped = [t for t in neglected if not t.auto_doable]
+        if skipped and sys.stdin.isatty():
+            neglected = _prompt_user_overrides(neglected)
         logger.info("[GhostWriter][pipeline] Dry run — stopping after classify")
         report = build_report(neglected, [], True, run_id)
         report.recommendations = scan_competitors()
         _upload_report(report, box, config)
         return report
 
-    # Stage 5-6: Orchestrate
-    if has_ui: show_stage(5, "Implement", "Strands agents making code changes")
-    logger.info("[GhostWriter][pipeline] Stage 5-6: Orchestrate")
+    # Stage 5-6: Implement — start auto-doable tasks immediately in parallel
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from agents.orchestrator import orchestrate
-    results, _ = orchestrate(neglected, config.repo, config.bedrock_model_id, run_id)
+
+    auto_now = [t for t in neglected if t.auto_doable]
+    skipped = [t for t in neglected if not t.auto_doable]
+
+    # Kick off auto-doable tasks in background immediately
+    bg_future = None
+    if auto_now:
+        if has_ui: show_stage(5, "Implement", f"Starting {len(auto_now)} task(s) in parallel — each on its own branch")
+        logger.info("[GhostWriter][pipeline] Stage 5-6: Starting %d auto-doable tasks in parallel", len(auto_now))
+        pool = ThreadPoolExecutor(max_workers=1)
+        bg_future = pool.submit(orchestrate, neglected, config.repo, config.bedrock_model_id, run_id)
+
+    # Meanwhile, prompt user for overrides on skipped tasks
+    if skipped and sys.stdin.isatty():
+        neglected = _prompt_user_overrides(neglected)
+        # If user forced any new tasks, run those too
+        newly_approved = [t for t in neglected if t.auto_doable and t.user_guidance and t not in auto_now]
+        if newly_approved:
+            logger.info("[GhostWriter][pipeline] Running %d user-overridden tasks", len(newly_approved))
+            override_results, _ = orchestrate(neglected, config.repo, config.bedrock_model_id, run_id + "-ovr")
+        else:
+            override_results = []
+    else:
+        override_results = []
+
+    # Collect background results
+    if bg_future:
+        results, _ = bg_future.result()
+        pool.shutdown(wait=False)
+    else:
+        results = []
+
+    all_results = results + override_results
     if has_ui:
-        for r in results:
+        for r in all_results:
             show_worker_result(r)
 
     # Stage 7: Report
     if has_ui: show_stage(7, "Report", "Building and uploading run report")
     logger.info("[GhostWriter][pipeline] Stage 7: Build report")
-    report = build_report(neglected, results, False, run_id)
+    report = build_report(neglected, all_results, False, run_id)
     report.recommendations = scan_competitors()
     _upload_report(report, box, config)
     return report
