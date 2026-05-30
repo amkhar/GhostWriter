@@ -126,10 +126,18 @@ class BoxClient:
                 files={"file": (file_path.name, fh, "text/plain")},
             )
         if resp.status_code == 409:
-            # File already exists — return existing ID
             existing_id = resp.json()["context_info"]["conflicts"]["id"]
-            logger.info("[ingest] File already exists, reusing ID %s", existing_id)
-            return existing_id
+            # Overwrite with new version
+            with open(file_path, "rb") as fh2:
+                resp2 = requests.post(
+                    f"https://upload.box.com/api/2.0/files/{existing_id}/content",
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    data={"attributes": json.dumps({"name": file_path.name})},
+                    files={"file": (file_path.name, fh2, "text/plain")},
+                )
+            resp2.raise_for_status()
+            logger.info("[ingest] File already exists, reuploaded to ID %s", existing_id)
+            return resp2.json()["entries"][0]["id"]
         resp.raise_for_status()
         return resp.json()["entries"][0]["id"]
 

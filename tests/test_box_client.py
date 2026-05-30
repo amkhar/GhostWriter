@@ -96,12 +96,18 @@ def test_upload_transcript_success(tmp_path, client):
 def test_upload_transcript_conflict_returns_existing(tmp_path, client):
     f = tmp_path / "test.txt"
     f.write_text("hello")
-    mock_resp = MagicMock()
-    mock_resp.status_code = 409
-    mock_resp.json.return_value = {"context_info": {"conflicts": {"id": "existing123"}}}
-    with patch("requests.post", return_value=mock_resp):
+    conflict_resp = MagicMock()
+    conflict_resp.status_code = 409
+    conflict_resp.json.return_value = {"context_info": {"conflicts": {"id": "existing123"}}}
+    reupload_resp = MagicMock()
+    reupload_resp.status_code = 200
+    reupload_resp.raise_for_status = MagicMock()
+    reupload_resp.json.return_value = {"entries": [{"id": "existing123"}]}
+    with patch("requests.post", side_effect=[conflict_resp, reupload_resp]) as mock_post:
         fid = client.upload_transcript(f, "folder1")
     assert fid == "existing123"
+    assert mock_post.call_count == 2
+    assert "existing123/content" in mock_post.call_args_list[1][0][0]
 
 
 def test_ai_extract_returns_list(client):
