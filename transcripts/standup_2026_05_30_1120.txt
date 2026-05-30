@@ -1,0 +1,31 @@
+Standup Meeting — 2026-05-30
+
+Yeah. I think I was able to see some issue.
+Where
+box has some data about a particular
+auto doable task.
+But we have already completed that task locally.
+But, in the box is not aware
+every time we run Ghostwriter,
+it
+shows up.
+All those previous
+tasks that
+that we identified that we could do
+but, we don't really want to see them.
+So maybe add some support
+Like, it would be much better if you could add some
+support where
+user can say that, hey. This
+particular task
+you can skip or you can complete
+in
+in back end or box.
+We can update the box.
+Storage,
+and maybe some other metadata about it.
+So we stop showing it from the next time.
+Yeah. But we don't have time to do this.
+Particular thing.
+It would be much better
+if we could experiment it and then do it

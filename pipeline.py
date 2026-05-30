@@ -19,6 +19,7 @@ from models import (
     PipelineConfig,
     RunReport,
     Task,
+    TaskClassification,
     WorkerResult,
 )
 
@@ -41,26 +42,27 @@ _UNSAFE_KEYWORDS = [
     "infrastructure", "delete", "drop table", "remove file", "rm -rf",
 ]
 
-_CLASSIFY_PROMPT = """You are a code-change safety classifier with codebase context.
+_ENHANCED_CLASSIFY_PROMPT = """You are a code-change safety classifier with codebase context.
 
-Given a neglected task AND relevant code from the repo, decide if it is safe to auto-implement.
+Given a neglected task AND relevant code from the repo, provide a detailed classification decision.
 
-Set auto_doable=true for changes that are:
-- Small and localized (touches 1-3 files, <50 lines)
-- Low risk: fix typo, update doc/README, add log line, add null check, bump dep,
-  add unit test, rename, add config, fix lint, update error msg, refactor small function,
-  change upload behavior, add a flag/option, update a prompt string
-- Clear from the code context what needs to change
+Respond with JSON only in this exact format:
+{{
+  "auto_doable": true|false,
+  "category": "<category if auto_doable>",
+  "reasoning": "<clear 1-2 sentence explanation>",
+  "decision_factors": ["<factor1>", "<factor2>", ...],
+  "code_analysis": "<what you found in the codebase>",
+  "risk_assessment": "<risks identified if not auto_doable>",
+  "suggested_approach": "<how user could make it auto_doable if not auto_doable>"
+}}
 
-Set auto_doable=false ONLY for:
-- Auth, payments, database migrations, security-critical code
-- Requires architectural decisions or multi-service coordination
-- Ambiguous with no clear path even after seeing the code
+Classification guidelines:
+- Set auto_doable=true for changes that are small, localized (1-3 files, <50 lines), and low risk
+- Safe categories: fix typo, update doc/README, add log line, add null check, bump dep, add unit test, rename, add config, fix lint, update error msg, refactor small function, change upload behavior, add a flag/option, update a prompt string
+- Set auto_doable=false for: auth/payments/security, database migrations, architectural changes, ambiguous requirements
 
 Be GENEROUS. If the code shows it is a straightforward change, approve it.
-
-Respond with JSON only:
-{{"auto_doable": true|false, "category": "<category>", "reasoning": "<1 sentence>", "files_to_change": ["<file1>"]}}
 
 Task title: {title}
 Task description: {description}
@@ -77,8 +79,7 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
     # Import UI (safe to call even if not in a TTY — functions are no-ops on non-TTY)
     try:
         from ui import (show_stage, show_upload, show_neglected_tasks,
-                        show_classification, show_worker_start, show_worker_result,
-                        show_push, show_report_summary)
+                        show_classification, show_worker_result)
         has_ui = True
     except ImportError:
         has_ui = False
@@ -90,7 +91,8 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
     )
 
     # Stage 1: Ingest
-    if has_ui: show_stage(1, "Ingest", "Uploading transcripts to Box")
+    if has_ui:
+        show_stage(1, "Ingest", "Uploading transcripts to Box")
     logger.info("[GhostWriter][pipeline] Stage 1: Ingest")
     ingested = ingest(config, box)
     if has_ui:
@@ -100,18 +102,21 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
         logger.warning("[GhostWriter][pipeline] No transcripts ingested")
 
     # Stage 2: Extract
-    if has_ui: show_stage(2, "Extract", "Box AI extracting tasks from each transcript")
+    if has_ui:
+        show_stage(2, "Extract", "Box AI extracting tasks from each transcript")
     logger.info("[GhostWriter][pipeline] Stage 2: Extract")
     tasks = extract(ingested, box)
     logger.info("[GhostWriter][pipeline] Extracted %d tasks", len(tasks))
 
     # Stage 3: Recurrence detection
-    if has_ui: show_stage(3, "Recurrence", "Box AI identifying neglected recurring tasks")
+    if has_ui:
+        show_stage(3, "Recurrence", "Box AI identifying neglected recurring tasks")
     logger.info("[GhostWriter][pipeline] Stage 3: Recurrence detection")
     file_ids = [f.box_file_id for f in ingested]
     neglected = detect_recurrence(file_ids, box)
     logger.info("[GhostWriter][pipeline] Found %d neglected tasks", len(neglected))
-    if has_ui and neglected: show_neglected_tasks(neglected)
+    if has_ui and neglected:
+        show_neglected_tasks(neglected)
 
     if not neglected:
         logger.info("[GhostWriter][pipeline] No neglected tasks — producing empty report")
@@ -120,7 +125,8 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
         return report
 
     # Stage 4: Classify
-    if has_ui: show_stage(4, "Classify", "Bedrock LLM deciding which tasks are safe to auto-implement")
+    if has_ui:
+        show_stage(4, "Classify", "Bedrock LLM deciding which tasks are safe to auto-implement")
     logger.info("[GhostWriter][pipeline] Stage 4: Classify")
     neglected = classify(neglected, config.bedrock_model_id, config.repo)
     if has_ui:
@@ -139,7 +145,8 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
         return report
 
     # Stage 5-6: Orchestrate
-    if has_ui: show_stage(5, "Implement", "Strands agents making code changes")
+    if has_ui:
+        show_stage(5, "Implement", "Strands agents making code changes")
     logger.info("[GhostWriter][pipeline] Stage 5-6: Orchestrate")
     from agents.orchestrator import orchestrate
     results, _ = orchestrate(neglected, config.repo, config.bedrock_model_id, run_id)
@@ -148,7 +155,8 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
             show_worker_result(r)
 
     # Stage 7: Report
-    if has_ui: show_stage(7, "Report", "Building and uploading run report")
+    if has_ui:
+        show_stage(7, "Report", "Building and uploading run report")
     logger.info("[GhostWriter][pipeline] Stage 7: Build report")
     report = build_report(neglected, results, False, run_id)
     _upload_report(report, box, config)
@@ -165,7 +173,8 @@ def ingest(config: PipelineConfig, box: BoxClient) -> list[IngestedFile]:
     ingested: list[IngestedFile] = []
 
     if config.paste_content:
-        import tempfile, os
+        import tempfile
+        import os
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, prefix="paste_") as f:
             f.write(config.paste_content)
             tmp_path = Path(f.name)
@@ -193,7 +202,6 @@ def ingest(config: PipelineConfig, box: BoxClient) -> list[IngestedFile]:
 
 def extract(ingested: list[IngestedFile], box: BoxClient) -> list[Task]:
     """Call Box AI Extract per file; return all Task objects."""
-    tasks_folder = None
     all_tasks: list[Task] = []
 
     for f in ingested:
@@ -236,7 +244,7 @@ def detect_recurrence(file_ids: list[str], box: BoxClient) -> list[NeglectedTask
 
 
 def classify(neglected: list[NeglectedTask], model_id: str, repo: Path = None) -> list[NeglectedTask]:
-    """Use Bedrock LLM to classify each NeglectedTask with codebase research."""
+    """Use Bedrock LLM to classify each NeglectedTask with enhanced codebase research."""
     from agents.worker import AGENT_BACKEND
 
     # If using an external agent (kiro/claude-code), let IT do the research + classification
@@ -250,30 +258,66 @@ def classify(neglected: list[NeglectedTask], model_id: str, repo: Path = None) -
     for task in neglected:
         # Fast-path: unsafe keywords → false
         combined = (task.title + " " + task.description).lower()
-        if any(kw in combined for kw in _UNSAFE_KEYWORDS):
+        unsafe_found = [kw for kw in _UNSAFE_KEYWORDS if kw in combined]
+        if unsafe_found:
             task.auto_doable = False
-            task.classification_reasoning = "Contains unsafe keyword"
-            logger.info("[GhostWriter][classify][%s] auto_doable=False (unsafe keyword)", task.id)
+            task.classification_reasoning = f"Contains unsafe keyword: {unsafe_found[0]}"
+            task.classification = TaskClassification(
+                auto_doable=False,
+                reasoning=f"Contains security/risk keyword: {unsafe_found[0]}",
+                decision_factors=[f"Unsafe keyword detected: '{unsafe_found[0]}'", "High-risk operation"],
+                risk_assessment="Security-sensitive or destructive operation",
+                suggested_approach="Manual review required for security/infrastructure changes"
+            )
+            logger.info("[GhostWriter][classify][%s] auto_doable=False (unsafe keyword: %s)", task.id, unsafe_found[0])
             continue
 
         code_context = _research_codebase(task, repo) if repo else "(no repo provided)"
-        prompt = _CLASSIFY_PROMPT.format(title=task.title, description=task.description, code_context=code_context)
+        prompt = _ENHANCED_CLASSIFY_PROMPT.format(title=task.title, description=task.description, code_context=code_context)
+        
         try:
             response = classifier(prompt)
             text = str(response).strip()
             match = re.search(r"\{.*\}", text, re.DOTALL)
             if match:
                 data = json.loads(match.group())
-                task.auto_doable = bool(data.get("auto_doable", False))
-                task.auto_doable_category = data.get("category")
-                task.classification_reasoning = data.get("reasoning")
+                
+                # Create enhanced classification
+                task.classification = TaskClassification(
+                    auto_doable=bool(data.get("auto_doable", False)),
+                    category=data.get("category"),
+                    reasoning=data.get("reasoning", "No reasoning provided"),
+                    decision_factors=data.get("decision_factors", []),
+                    code_analysis=data.get("code_analysis"),
+                    risk_assessment=data.get("risk_assessment"),
+                    suggested_approach=data.get("suggested_approach")
+                )
+                
+                # Set legacy fields for backward compatibility
+                task.auto_doable = task.classification.auto_doable
+                task.auto_doable_category = task.classification.category
+                task.classification_reasoning = task.classification.reasoning
             else:
                 task.auto_doable = False
                 task.classification_reasoning = "Could not parse classifier response"
+                task.classification = TaskClassification(
+                    auto_doable=False,
+                    reasoning="Could not parse classifier response",
+                    decision_factors=["Malformed classifier output"],
+                    risk_assessment="Unknown due to classification failure",
+                    suggested_approach="Re-run classification or provide manual guidance"
+                )
         except Exception as e:
             logger.error("[GhostWriter][classify][%s] Bedrock error: %s", task.id, e)
             task.auto_doable = False
             task.classification_reasoning = f"Classification failed: {e}"
+            task.classification = TaskClassification(
+                auto_doable=False,
+                reasoning=f"Classification system error: {str(e)}",
+                decision_factors=["System error during classification"],
+                risk_assessment="Cannot assess risk due to system failure",
+                suggested_approach="Check system configuration and retry, or provide manual guidance"
+            )
 
         logger.info(
             "[GhostWriter][classify][%s] auto_doable=%s category=%s reasoning=%s",
@@ -296,8 +340,9 @@ def _classify_via_agent(neglected: list[NeglectedTask], repo: Path) -> list[Negl
         f"Tasks to classify:\n{tasks_json}\n\n"
         f"For EACH task, search the codebase to find the relevant files and understand the scope.\n"
         f"A task is auto_doable if it's a localized change (1-3 files, <50 lines, no auth/payment/migration).\n\n"
-        f"Respond with ONLY a JSON array:\n"
-        f'[{{"id": "...", "auto_doable": true/false, "category": "...", "reasoning": "...", "files_to_change": [...]}}]'
+        f"Respond with ONLY a JSON array in this format:\n"
+        f'[{{"id": "...", "auto_doable": true/false, "category": "...", "reasoning": "...", '
+        f'"decision_factors": [...], "code_analysis": "...", "risk_assessment": "...", "suggested_approach": "..."}}]'
     )
 
     if AGENT_BACKEND == "kiro":
@@ -318,9 +363,23 @@ def _classify_via_agent(neglected: list[NeglectedTask], repo: Path) -> list[Negl
             for task in neglected:
                 if task.id in results_map:
                     data = results_map[task.id]
-                    task.auto_doable = bool(data.get("auto_doable", False))
-                    task.auto_doable_category = data.get("category")
-                    task.classification_reasoning = data.get("reasoning")
+                    
+                    # Create enhanced classification
+                    task.classification = TaskClassification(
+                        auto_doable=bool(data.get("auto_doable", False)),
+                        category=data.get("category"),
+                        reasoning=data.get("reasoning", "Agent classification"),
+                        decision_factors=data.get("decision_factors", []),
+                        code_analysis=data.get("code_analysis"),
+                        risk_assessment=data.get("risk_assessment"),
+                        suggested_approach=data.get("suggested_approach")
+                    )
+                    
+                    # Set legacy fields
+                    task.auto_doable = task.classification.auto_doable
+                    task.auto_doable_category = task.classification.category
+                    task.classification_reasoning = task.classification.reasoning
+                    
                 logger.info("[GhostWriter][classify][%s] auto_doable=%s reasoning=%s",
                             task.id, task.auto_doable, task.classification_reasoning)
             return neglected
@@ -328,12 +387,19 @@ def _classify_via_agent(neglected: list[NeglectedTask], repo: Path) -> list[Negl
             pass
 
     # Fallback: if agent didn't return parseable JSON, mark all as auto_doable
-    # (the agent researched it, trust its judgment even if format was off)
     logger.warning("[GhostWriter][classify] Could not parse agent output, defaulting all to auto_doable")
     for task in neglected:
         task.auto_doable = True
         task.auto_doable_category = "agent-researched"
         task.classification_reasoning = "Agent researched codebase but output wasn't parseable JSON; defaulting to approve"
+        task.classification = TaskClassification(
+            auto_doable=True,
+            category="agent-researched",
+            reasoning="Agent researched codebase but output format was invalid; defaulting to approve",
+            decision_factors=["Agent research completed", "Output format invalid but defaulting to safe"],
+            code_analysis="Agent performed codebase research but results not parseable",
+            suggested_approach="Agent already performed research and deemed safe"
+        )
     return neglected
 
 
@@ -400,7 +466,12 @@ def _prompt_user_overrides(neglected: list[NeglectedTask]) -> list[NeglectedTask
 
     for task in skipped:
         console.print(f"\n  [bold]{task.title}[/bold]")
-        console.print(f"  [dim]Reason skipped: {task.classification_reasoning}[/dim]")
+        if task.classification:
+            console.print(f"  [dim]Reason skipped: {task.classification.reasoning}[/dim]")
+            if task.classification.suggested_approach:
+                console.print(f"  [dim]Suggestion: {task.classification.suggested_approach}[/dim]")
+        else:
+            console.print(f"  [dim]Reason skipped: {task.classification_reasoning}[/dim]")
         console.print(f"  [dim]Description: {task.description[:100]}[/dim]")
         answer = console.input("  [yellow]Provide implementation details (or Enter to skip):[/yellow] ").strip()
 
@@ -409,6 +480,14 @@ def _prompt_user_overrides(neglected: list[NeglectedTask]) -> list[NeglectedTask
             task.auto_doable_category = "user-directed"
             task.user_guidance = answer
             task.classification_reasoning = f"User override: {answer[:80]}"
+            
+            # Update classification if it exists
+            if task.classification:
+                task.classification.auto_doable = True
+                task.classification.category = "user-directed"
+                task.classification.reasoning = f"User override: {answer}"
+                task.classification.decision_factors = ["User provided implementation guidance", "Manual override"]
+            
             record_override(
                 task_id=task.id,
                 title=task.title,
@@ -416,7 +495,7 @@ def _prompt_user_overrides(neglected: list[NeglectedTask]) -> list[NeglectedTask
                 user_guidance=answer,
                 classification_reasoning=task.classification_reasoning,
             )
-            console.print(f"  [green]✅ Forced auto-doable with your guidance[/green]")
+            console.print("  [green]✅ Forced auto-doable with your guidance[/green]")
 
     return neglected
 

@@ -1,0 +1,27 @@
+Standup Meeting — 2026-05-30
+
+Yeah. So I think, like, we,
+we have ghostwriter, but
+we don't have any
+UI for this. Right?
+Should we have a UI?
+Do you think? Yes. I think a UI would be better, but
+it will help everyone to visualize the things and
+relate a bit more. Yeah.
+Right now, like, we can use it CLI because we are techies, we are builders.
+We don't have time. Like, we are improving the, ghostwriter day.
+And,
+it would be much better if we have the UI and
+UI could have, you know,
+something like
+a simple a very simple button that I could click and then it would start recording everything
+And then
+end to end, like,
+run all this research, and then show me all this research, the progress of it,
+in some separate tab. Yeah. But
+it would be much better if we could do this, but we don't have time because
+we are working on some other task related
+to, you know,
+supporting experiments and all those things.
+Yeah. It could have been amazing if someone can do it on behalf of us.
+Yeah.

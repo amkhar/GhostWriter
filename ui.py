@@ -5,9 +5,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from rich.markdown import Markdown
 from rich.rule import Rule
-from rich.columns import Columns
 
 from models import NeglectedTask, WorkerResult, RunReport
 
@@ -59,14 +57,84 @@ def show_classification(task: NeglectedTask):
     if task.auto_doable:
         icon = "✅"
         style = "green"
+        status = "[bold green]AUTO-DOABLE[/bold green]"
     else:
         icon = "❌"
         style = "red"
+        status = "[dim]skip[/dim]"
+    
+    # Basic classification line
     console.print(
-        f"  {icon} [{style}]{task.id}[/{style}] → "
-        f"{'[bold green]AUTO-DOABLE[/bold green]' if task.auto_doable else '[dim]skip[/dim]'}"
+        f"  {icon} [{style}]{task.id}[/{style}] → {status}"
         f"{'  [dim](' + task.auto_doable_category + ')[/dim]' if task.auto_doable_category else ''}"
     )
+    
+    # Enhanced details for non-auto-doable tasks
+    if not task.auto_doable and task.classification:
+        console.print(f"    [dim]Reason: {task.classification.reasoning}[/dim]")
+        if task.classification.decision_factors:
+            key_factors = ", ".join(task.classification.decision_factors[:2])  # Show first 2
+            console.print(f"    [dim]Key factors: {key_factors}[/dim]")
+
+
+def show_classification_details(task: NeglectedTask):
+    """Show detailed classification information for a task."""
+    if not task.classification:
+        return
+    
+    title = f"🔍 Classification Details · {task.id}"
+    content_lines = []
+    
+    content_lines.append(f"[bold]Decision:[/bold] {'✅ Auto-doable' if task.auto_doable else '❌ Not auto-doable'}")
+    content_lines.append(f"[bold]Reasoning:[/bold] {task.classification.reasoning}")
+    
+    if task.classification.decision_factors:
+        content_lines.append("\n[bold]Decision Factors:[/bold]")
+        for factor in task.classification.decision_factors:
+            content_lines.append(f"  • {factor}")
+    
+    if task.classification.code_analysis:
+        content_lines.append(f"\n[bold]Code Analysis:[/bold] {task.classification.code_analysis}")
+    
+    if task.classification.risk_assessment:
+        content_lines.append(f"\n[bold]Risk Assessment:[/bold] {task.classification.risk_assessment}")
+    
+    if task.classification.suggested_approach and not task.auto_doable:
+        content_lines.append(f"\n[bold]Suggested Approach:[/bold] {task.classification.suggested_approach}")
+    
+    console.print(Panel(
+        "\n".join(content_lines),
+        title=title,
+        border_style="cyan" if task.auto_doable else "yellow",
+        width=80
+    ))
+
+
+def show_skipped_tasks_summary(tasks: list[NeglectedTask]):
+    """Show a summary of why tasks were skipped."""
+    skipped = [t for t in tasks if not t.auto_doable]
+    if not skipped:
+        return
+    
+    console.print()
+    console.print(Panel(
+        f"[yellow]{len(skipped)} task(s) were not classified as auto-doable.[/yellow]\n"
+        "[dim]See detailed explanations in the report.[/dim]",
+        title="[bold]📋 Skipped Tasks Summary[/bold]",
+        border_style="yellow",
+    ))
+    
+    # Group by common reasons
+    reason_counts = {}
+    for task in skipped:
+        if task.classification and task.classification.reasoning:
+            reason = task.classification.reasoning[:50] + "..." if len(task.classification.reasoning) > 50 else task.classification.reasoning
+        else:
+            reason = task.classification_reasoning or "Unknown reason"
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    
+    for reason, count in sorted(reason_counts.items(), key=lambda x: x[1], reverse=True):
+        console.print(f"  • {reason} [dim]({count} task{'s' if count > 1 else ''})[/dim]")
 
 
 def show_agent_thinking(task_id: str, message: str):
@@ -131,7 +199,7 @@ def show_push(branch: str, success: bool):
             width=70,
         ))
     else:
-        console.print(f"  [yellow]⚠️  Push skipped (no remote configured)[/yellow]")
+        console.print("  [yellow]⚠️  Push skipped (no remote configured)[/yellow]")
 
 
 def show_report_summary(report: RunReport):
@@ -153,6 +221,9 @@ def show_report_summary(report: RunReport):
         Panel(f"[bold red]{failed}[/bold red]\n[dim]failed[/dim]", width=14, border_style="red") if failed else Text(""),
     )
     console.print(stats)
+
+    # Show summary of skipped tasks
+    show_skipped_tasks_summary(report.neglected_tasks)
 
     if report.report_box_file_id:
         console.print(f"\n  [dim]Report uploaded to Box:[/dim] [cyan]{report.report_box_file_id}[/cyan]")
