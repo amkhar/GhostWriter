@@ -34,6 +34,8 @@ class NeglectedTask(BaseModel):
     auto_doable_category: Optional[str] = None
     classification_reasoning: Optional[str] = None
     user_guidance: Optional[str] = None  # user-provided implementation details (skips classification)
+    priority: Optional[str] = None  # "high" | "normal" — set by Apify public-evidence enrichment
+    evidence: list[str] = []  # public-source findings (issues, reviews, compat notes) via Apify
 
 
 class WorkerResult(BaseModel):
@@ -88,6 +90,12 @@ class RunReport(BaseModel):
                 lines.append(f"- **ID:** `{t.id}`")
                 lines.append(f"- **Description:** {t.description}")
                 lines.append(f"- **Reason:** {t.reason}")
+                if t.priority:
+                    lines.append(f"- **Priority:** {t.priority}")
+                if t.evidence:
+                    lines.append("- **Evidence (via Apify):**")
+                    for e in t.evidence:
+                        lines.append(f"    - {e}")
                 lines.append(f"- **Auto-doable:** {'✅ Yes' if t.auto_doable else '❌ No'}")
                 if t.auto_doable_category:
                     lines.append(f"- **Category:** {t.auto_doable_category}")

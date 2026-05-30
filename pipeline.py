@@ -119,6 +119,10 @@ def run_pipeline(config: PipelineConfig) -> RunReport:
         _upload_report(report, box, config)
         return report
 
+    # Apify enrichment: public-evidence priority + dependency-compat checks (no-op without APIFY_TOKEN)
+    from apify_enrich import enrich
+    neglected = enrich(neglected)
+
     # Stage 4: Classify
     if has_ui: show_stage(4, "Classify", "Bedrock LLM deciding which tasks are safe to auto-implement")
     logger.info("[GhostWriter][pipeline] Stage 4: Classify")
