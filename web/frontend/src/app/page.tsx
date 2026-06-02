@@ -28,6 +28,7 @@ export default function Home() {
   const [guidanceInputs, setGuidanceInputs] = useState<Record<string, string>>({});
   const [selectedStage, setSelectedStage] = useState<number | null>(null);
   const [stageData, setStageData] = useState<Record<number, any>>({});
+  const [repoInput, setRepoInput] = useState<string>('./sample_repo');
 
   const pollRef = useRef<NodeJS.Timeout | null>(null);
   const terminalEndRef = useRef<HTMLDivElement | null>(null);
@@ -93,7 +94,8 @@ export default function Home() {
 
     addLog('System', 'Initializing GhostWriter backend pipeline...', 'info');
 
-    const url = `/api/pipeline/stream?transcript=${encodeURIComponent(transcript)}&repo=${encodeURIComponent('/Users/himmi/casacadia/GhostWriter')}`;
+    const backendHost = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:8000` : 'http://localhost:8000';
+    const url = `${backendHost}/api/pipeline/stream?transcript=${encodeURIComponent(transcript)}&repo=${encodeURIComponent(repoInput)}`;
     const es = new EventSource(url);
 
     es.addEventListener('stage', (e) => {
@@ -254,7 +256,8 @@ export default function Home() {
     addLog(`Override:${taskId.substring(0, 15)}`, `User override submitted. Initializing custom workspace...`, 'info');
 
     // 3. Trigger override pipeline
-    const url = `/api/tasks/${encodeURIComponent(taskId)}/override?run_id=${encodeURIComponent(runId)}&guidance=${encodeURIComponent(guidance)}`;
+    const backendHost = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:8000` : 'http://localhost:8000';
+    const url = `${backendHost}/api/tasks/${encodeURIComponent(taskId)}/override?run_id=${encodeURIComponent(runId)}&guidance=${encodeURIComponent(guidance)}`;
     const es = new EventSource(url);
 
     es.addEventListener('agent', (e) => {
@@ -306,6 +309,24 @@ export default function Home() {
             <p className="mt-4 text-lg text-slate-400 max-w-2xl mx-auto">
               GhostWriter listens to your team's standup, automatically extracts recurring neglected tasks, researches the codebase for safety, and implements safe fixes in parallel.
             </p>
+          </div>
+
+          {/* Repo path input */}
+          <div className="w-full max-w-lg mb-10">
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-widest mb-2">Target Repository</label>
+            <div className="relative">
+              <input
+                type="text"
+                value={repoInput}
+                onChange={(e) => setRepoInput(e.target.value)}
+                placeholder="./sample_repo or https://github.com/user/repo"
+                className="w-full bg-[#111827] border border-slate-800 hover:border-slate-700 focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/30 rounded-xl px-4 py-3 text-sm text-slate-200 placeholder-slate-600 outline-none transition-all font-mono"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-slate-600">
+                {repoInput.startsWith('http') ? '🌐 GitHub' : '📁 Local'}
+              </span>
+            </div>
+            <p className="mt-1.5 text-[11px] text-slate-600">Local path or public GitHub URL. GitHub repos will be cloned automatically.</p>
           </div>
 
           <div className="relative group">

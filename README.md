@@ -6,6 +6,22 @@ GhostWriter listens to your standup meetings, identifies the tasks your team kee
 
 ---
 
+## How it looks
+
+<div align="center">
+
+### CLI
+
+<img src="assets/ghostwriter-cli-g.gif" alt="GhostWriter CLI demo" width="720" />
+
+### UI
+
+<img src="assets/ghostwriter-ui-g.gif" alt="GhostWriter UI demo" width="720" />
+
+</div>
+
+---
+
 ## How it works
 
 ```

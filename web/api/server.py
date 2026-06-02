@@ -287,7 +287,24 @@ async def pipeline_run(req: PipelineRunRequest):
                     config_kwargs["transcripts_dir"] = Path(req.transcripts_dir)
 
                 if req.repo:
-                    config_kwargs["repo"] = Path(req.repo)
+                    repo_path = req.repo
+                    # If it's a GitHub URL, clone it to a temp directory
+                    if repo_path.startswith("http://") or repo_path.startswith("https://"):
+                        import tempfile, subprocess
+                        clone_dir = Path(tempfile.mkdtemp(prefix=f"ghostwriter-clone-{run_id}-"))
+                        emit("stage", {"stage": 0, "name": "Clone", "status": "running", "message": f"Cloning {repo_path}..."})
+                        result = subprocess.run(
+                            ["git", "clone", "--depth", "1", repo_path, str(clone_dir / "repo")],
+                            capture_output=True, text=True, timeout=120,
+                        )
+                        if result.returncode != 0:
+                            emit("error", {"message": f"Git clone failed: {result.stderr.strip()}"})
+                            loop.call_soon_threadsafe(queue.put_nowait, None)
+                            return
+                        config_kwargs["repo"] = clone_dir / "repo"
+                        emit("stage", {"stage": 0, "name": "Clone", "status": "complete", "message": "Repository cloned successfully"})
+                    else:
+                        config_kwargs["repo"] = Path(repo_path)
 
                 config = PipelineConfig(**config_kwargs)
 
