@@ -93,7 +93,8 @@ export default function Home() {
 
     addLog('System', 'Initializing GhostWriter backend pipeline...', 'info');
 
-    const url = `/api/pipeline/stream?transcript=${encodeURIComponent(transcript)}&repo=${encodeURIComponent('/Users/himmi/casacadia/GhostWriter')}`;
+    const backendHost = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:8000` : 'http://localhost:8000';
+    const url = `${backendHost}/api/pipeline/stream?transcript=${encodeURIComponent(transcript)}&repo=${encodeURIComponent('/Users/himmi/casacadia/GhostWriter')}`;
     const es = new EventSource(url);
 
     es.addEventListener('stage', (e) => {
@@ -254,7 +255,8 @@ export default function Home() {
     addLog(`Override:${taskId.substring(0, 15)}`, `User override submitted. Initializing custom workspace...`, 'info');
 
     // 3. Trigger override pipeline
-    const url = `/api/tasks/${encodeURIComponent(taskId)}/override?run_id=${encodeURIComponent(runId)}&guidance=${encodeURIComponent(guidance)}`;
+    const backendHost = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:8000` : 'http://localhost:8000';
+    const url = `${backendHost}/api/tasks/${encodeURIComponent(taskId)}/override?run_id=${encodeURIComponent(runId)}&guidance=${encodeURIComponent(guidance)}`;
     const es = new EventSource(url);
 
     es.addEventListener('agent', (e) => {

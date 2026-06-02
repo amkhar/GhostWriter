@@ -135,9 +135,15 @@ class RunReport(BaseModel):
                 if r.test_status:
                     lines.append(f"**Tests:** {r.test_status}")
                 if r.diff:
+                    diff_lines = r.diff.splitlines()
+                    max_lines = 50
                     lines.append("**Diff:**")
                     lines.append("```diff")
-                    lines.append(r.diff)
+                    if len(diff_lines) > max_lines:
+                        lines.extend(diff_lines[:max_lines])
+                        lines.append(f"... ({len(diff_lines) - max_lines} more lines truncated)")
+                    else:
+                        lines.append(r.diff)
                     lines.append("```")
                 if r.error:
                     lines.append(f"**Error:** {r.error}")

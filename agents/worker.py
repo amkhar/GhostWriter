@@ -177,7 +177,7 @@ def _run_kiro_agent(
             break
         stripped = line.strip()
         if stripped:
-            print(f"      [kiro-cli] {stripped}", flush=True)
+            logger.debug("[GhostWriter][worker][%s][kiro-cli] %s", task_id, stripped)
             if progress_cb:
                 progress_cb(task_id, f"kiro-cli: {stripped[:120]}", "working")
             lines.append(stripped)
